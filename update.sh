@@ -13,6 +13,13 @@ echo "========================================================="
 echo "Updating application to the latest version..."
 echo "---------------------------------------------------------"
 
+# Locate the root directory where this script is located
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+cd "$SCRIPT_DIR"
+
+# Define raw file source for bare-script installations
+RAW_PYTHON_URL="https://raw.githubusercontent.com/milibots/vpn-reseller-bot/main/resellerbot.py"
+
 # Create a temporary secure directory for backing up config & db
 BACKUP_DIR="/tmp/reseller_bot_backup_$(date +%s)"
 mkdir -p "$BACKUP_DIR"
@@ -27,13 +34,19 @@ if [ -f "reseller_config.json" ]; then
     echo "✔ reseller_config.json backed up."
 fi
 
-# Pulling latest updates from GitHub
-echo "Syncing repository with remote changes..."
-git reset --hard
-git pull origin main || git pull origin master
+# Syncing updates dynamically
+if [ -d ".git" ]; then
+    echo "Git repository detected. Syncing via Git..."
+    git reset --hard
+    git pull origin main || git pull origin master
+else
+    echo "Bare script installation detected. Downloading raw file from GitHub..."
+    curl -sSL -o resellerbot.py "$RAW_PYTHON_URL"
+    echo "✔ resellerbot.py updated."
+fi
 
-# Restoring localized parameters & database tables
-echo "Restoring localized database and configurations..."
+# Restoring database and configurations
+echo "Restoring local database and configurations..."
 if [ -f "$BACKUP_DIR/reseller_bot.db" ]; then
     cp "$BACKUP_DIR/reseller_bot.db" ./
 fi
