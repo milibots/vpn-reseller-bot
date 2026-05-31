@@ -8,6 +8,11 @@ import asyncio
 import requests
 import getpass
 import logging
+import urllib.parse
+import csv
+import io
+import random
+import string
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 
@@ -61,8 +66,10 @@ from aiogram.filters import Command, CommandStart
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, desc
+from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError, TelegramBadRequest
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, Boolean, desc, text
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
+from sqlalchemy.inspection import inspect
 from colorama import init, Fore, Style
 from rich.console import Console
 from rich.panel import Panel
@@ -126,7 +133,13 @@ def load_or_create_config():
     if os.path.exists(CONFIG_PATH):
         try:
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+                # Ensure toggles exist in configuration load
+                if "MAINTENANCE_MODE" not in data:
+                    data["MAINTENANCE_MODE"] = False
+                if "SHOP_CLOSED" not in data:
+                    data["SHOP_CLOSED"] = False
+                return data
         except Exception:
             pass
 
@@ -158,23 +171,29 @@ def load_or_create_config():
     card_number = input(f"{Fore.CYAN}5. Enter Bank Card Number for deposits: {Style.RESET_ALL}").strip()
     card_holder = input(f"{Fore.CYAN}6. Enter Card Holder Name: {Style.RESET_ALL}").strip()
 
-    backup_choice = input(f"{Fore.CYAN}7. Enable automatic DB backups? (y/n) [default: n]: {Style.RESET_ALL}").strip().lower()
+    welcome_banner = input(f"{Fore.CYAN}7. Enter Welcome Banner Image URL (optional): {Style.RESET_ALL}").strip()
+
+    ton_address = input(f"{Fore.CYAN}8. Enter TON Wallet Address for deposits (optional): {Style.RESET_ALL}").strip()
+    usdt_address = input(f"{Fore.CYAN}9. Enter USDT (TRC20) Wallet Address for deposits (optional): {Style.RESET_ALL}").strip()
+    trx_address = input(f"{Fore.CYAN}10. Enter TRX Wallet Address for deposits (optional): {Style.RESET_ALL}").strip()
+
+    backup_choice = input(f"{Fore.CYAN}11. Enable automatic DB backups? (y/n) [default: n]: {Style.RESET_ALL}").strip().lower()
     backup_enabled = (backup_choice == 'y' or backup_choice == 'yes')
     
     backup_interval = 12
     if backup_enabled:
-        backup_interval_input = input(f"{Fore.CYAN}8. Backup interval in hours [default: 12]: {Style.RESET_ALL}").strip()
+        backup_interval_input = input(f"{Fore.CYAN}12. Backup interval in hours [default: 12]: {Style.RESET_ALL}").strip()
         if backup_interval_input.isdigit():
             backup_interval = int(backup_interval_input)
 
-    force_join_id = input(f"{Fore.CYAN}9. Enter Force Join Channel Chat ID (e.g. -100123456789) [optional]: {Style.RESET_ALL}").strip()
+    force_join_id = input(f"{Fore.CYAN}13. Enter Force Join Channel Chat ID (e.g. -100123456789) [optional]: {Style.RESET_ALL}").strip()
     force_join_chat_id = int(force_join_id) if (force_join_id and force_join_id.replace('-', '').isdigit()) else None
     
     force_join_link = ""
     if force_join_chat_id:
-        force_join_link = input(f"{Fore.CYAN}10. Enter Force Join Channel Invite Link: {Style.RESET_ALL}").strip()
+        force_join_link = input(f"{Fore.CYAN}14. Enter Force Join Channel Invite Link: {Style.RESET_ALL}").strip()
         
-    support_username = input(f"{Fore.CYAN}11. Enter Support Username [default: @rnilaad]: {Style.RESET_ALL}").strip()
+    support_username = input(f"{Fore.CYAN}15. Enter Support Username [default: @rnilaad]: {Style.RESET_ALL}").strip()
     if not support_username:
         support_username = "@rnilaad"
     elif not support_username.startswith("@"):
@@ -187,11 +206,17 @@ def load_or_create_config():
         "API_BASE_URL": api_base_url,
         "CARD_NUMBER": card_number or "6037997900000000",
         "CARD_HOLDER": card_holder or "Administrator",
+        "WELCOME_BANNER_URL": welcome_banner,
+        "TON_ADDRESS": ton_address,
+        "USDT_ADDRESS": usdt_address,
+        "TRX_ADDRESS": trx_address,
         "BACKUP_ENABLED": backup_enabled,
         "BACKUP_INTERVAL_HOURS": backup_interval,
         "FORCE_JOIN_CHAT_ID": force_join_chat_id,
         "FORCE_JOIN_LINK": force_join_link,
-        "SUPPORT_USERNAME": support_username
+        "SUPPORT_USERNAME": support_username,
+        "MAINTENANCE_MODE": False,
+        "SHOP_CLOSED": False
     }
 
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
@@ -199,7 +224,7 @@ def load_or_create_config():
     
     console.print("[green]✔ Configuration written successfully.[/green]")
 
-    service_choice = input(f"{Fore.CYAN}12. Would you like to create a systemctl service unit? (y/n): {Style.RESET_ALL}").strip().lower()
+    service_choice = input(f"{Fore.CYAN}16. Would you like to create a systemctl service unit? (y/n): {Style.RESET_ALL}").strip().lower()
     if service_choice == 'y' or service_choice == 'yes':
         if os.name == "nt":
             venv_python = os.path.join(os.getcwd(), ".venv", "Scripts", "python.exe")
@@ -210,6 +235,11 @@ def load_or_create_config():
     return config_data
 
 config = load_or_create_config()
+
+def save_config_file():
+    """Writes global memory configurations back to the JSON file safely."""
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=4, ensure_ascii=False)
 
 DATABASE_URL = "sqlite:///reseller_bot.db"
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
@@ -225,6 +255,8 @@ class DBUser(Base):
     first_name = Column(String, nullable=True)
     balance = Column(Float, default=0.0)
     joined_at = Column(DateTime, default=datetime.utcnow)
+    is_active = Column(Boolean, default=True)
+    is_banned = Column(Boolean, default=False)
 
 class DBService(Base):
     """Represents a virtual private server subscription connected to the API."""
@@ -250,6 +282,7 @@ class DBTransaction(Base):
     description = Column(String, nullable=True)
     date = Column(DateTime, default=datetime.utcnow)
     receipt_image_id = Column(String, nullable=True)
+    tx_hash = Column(String, nullable=True)
 
 class DBPlanOverride(Base):
     """Allows administrators to customize titles and prices of Reseller API plans."""
@@ -257,8 +290,46 @@ class DBPlanOverride(Base):
     plan_id = Column(Integer, primary_key=True)
     custom_title = Column(String, nullable=True)
     custom_price = Column(Float, nullable=True)
+    is_hidden = Column(Boolean, default=False)
 
 Base.metadata.create_all(bind=engine)
+
+def execute_db_migrations():
+    """Inspects database model definitions and automatically coordinates schema corrections."""
+    inspector = inspect(engine)
+    with engine.connect() as conn:
+        columns = [col["name"] for col in inspector.get_columns("users")]
+        if "is_active" not in columns:
+            try:
+                conn.execute(text("ALTER TABLE users ADD COLUMN is_active BOOLEAN DEFAULT 1"))
+                conn.commit()
+            except Exception as e:
+                logger.error(f"Error migrating users: {e}")
+
+        if "is_banned" not in columns:
+            try:
+                conn.execute(text("ALTER TABLE users ADD COLUMN is_banned BOOLEAN DEFAULT 0"))
+                conn.commit()
+            except Exception as e:
+                logger.error(f"Error migrating users is_banned: {e}")
+
+        columns_tx = [col["name"] for col in inspector.get_columns("transactions")]
+        if "tx_hash" not in columns_tx:
+            try:
+                conn.execute(text("ALTER TABLE transactions ADD COLUMN tx_hash VARCHAR(255) NULL"))
+                conn.commit()
+            except Exception as e:
+                logger.error(f"Error migrating transactions: {e}")
+
+        columns_po = [col["name"] for col in inspector.get_columns("plan_overrides")]
+        if "is_hidden" not in columns_po:
+            try:
+                conn.execute(text("ALTER TABLE plan_overrides ADD COLUMN is_hidden BOOLEAN DEFAULT 0"))
+                conn.commit()
+            except Exception as e:
+                logger.error(f"Error migrating plan_overrides is_hidden: {e}")
+
+execute_db_migrations()
 
 def get_or_create_db_user(session, tg_user):
     """Fetches a user profile from SQLite, or creates a new entry if not existing."""
@@ -268,12 +339,35 @@ def get_or_create_db_user(session, tg_user):
             telegram_id=tg_user.id,
             username=tg_user.username,
             first_name=tg_user.first_name,
-            joined_at=datetime.utcnow()
+            joined_at=datetime.utcnow(),
+            is_active=True,
+            is_banned=False
         )
         session.add(user)
         session.commit()
         session.refresh(user)
+    else:
+        if not user.is_active:
+            user.is_active = True
+            session.commit()
     return user
+
+def calculate_user_rank(session, user_id):
+    """Computes dynamic ranking tier based on cumulative successful purchase volumes."""
+    total_spent = session.query(text("SUM(ABS(amount))")).select_from(DBTransaction).filter(
+        DBTransaction.user_id == user_id,
+        DBTransaction.type.in_(["Buy", "Renew"]),
+        DBTransaction.status == "success"
+    ).scalar() or 0.0
+    
+    if total_spent >= 1000000:
+        return "💎 کاربر الماس (Diamond)", total_spent
+    elif total_spent >= 500000:
+        return "🥇 کاربر طلایی (Gold)", total_spent
+    elif total_spent >= 200000:
+        return "🥈 کاربر نقره‌ای (Silver)", total_spent
+    else:
+        return "🥉 کاربر برنزی (Bronze)", total_spent
 
 # ---------------------------------------------------------------------------
 # 3. Reseller API Client
@@ -365,30 +459,62 @@ class Form(StatesGroup):
     """FSM states group for client checkout and top-up operations."""
     waiting_for_charge_amount = State()
     waiting_for_receipt = State()
+    waiting_for_crypto_receipt = State()
     waiting_for_service_name = State()
     
 class AdminStates(StatesGroup):
     """FSM states group for restricted administrative procedures."""
-    waiting_for_broadcast = State()
+    waiting_for_broadcast_mode = State()
+    waiting_for_broadcast_msg = State()
+    waiting_for_broadcast_confirm = State()
     waiting_for_charge_userid = State()
     waiting_for_charge_amount = State()
     waiting_for_plan_select = State()
     waiting_for_plan_title = State()
     waiting_for_plan_price = State()
+    waiting_for_user_lookup = State()
+    waiting_for_service_lookup = State()
+    waiting_for_direct_message = State()
 
 # ---------------------------------------------------------------------------
-# 5. Force Join Channel Verification Middleware
+# 5. Global Middleware (Banned, Maintenance & Force Join Channel Checks)
 # ---------------------------------------------------------------------------
-class ForceJoinMiddleware(BaseMiddleware):
-    """Intercepts and verifies channel subscription status before proceeding."""
+class CustomSecurityMiddleware(BaseMiddleware):
+    """Enforces subscription rules and terminates interaction sequences for banned clients."""
     async def __call__(self, handler, event, data):
         user = data.get("event_from_user")
         if not user:
             return await handler(event, data)
         
-        if user.id in config["ADMIN_IDS"]:
+        is_admin = user.id in config["ADMIN_IDS"]
+
+        # 1. Check Maintenance Mode first
+        if config.get("MAINTENANCE_MODE") and not is_admin:
+            maint_txt = (
+                "🔧 **ربات در حال حاضر در وضعیت بروزرسانی قرار دارد**\n\n"
+                "در این لحظه امکان ارائه خدمات وجود ندارد. لطفاً بعداً تلاش کنید یا با پشتیبانی در ارتباط باشید."
+            )
+            if isinstance(event, Message):
+                await event.reply(maint_txt, parse_mode="Markdown")
+            elif isinstance(event, CallbackQuery):
+                await event.answer("⚠️ ربات موقتاً به دلیل بروزرسانی از دسترس خارج است.", show_alert=True)
+            return
+
+        # 2. Check Ban Status
+        with SessionLocal() as db:
+            db_user = db.query(DBUser).filter(DBUser.telegram_id == user.id).first()
+            if db_user and db_user.is_banned:
+                ban_txt = "❌ **دسترسی شما به ربات مسدود شده است.**\n\nدر صورت وجود سوال یا مشکل با پشتیبانی در ارتباط باشید."
+                if isinstance(event, Message):
+                    await event.reply(ban_txt, parse_mode="Markdown")
+                elif isinstance(event, CallbackQuery):
+                    await event.answer("❌ حساب شما مسدود شده است.", show_alert=True)
+                return
+
+        if is_admin:
             return await handler(event, data)
             
+        # 3. Check Force Join
         chat_id = config.get("FORCE_JOIN_CHAT_ID")
         link = config.get("FORCE_JOIN_LINK", "https://t.me/your_channel")
         
@@ -414,8 +540,8 @@ class ForceJoinMiddleware(BaseMiddleware):
                 return
         return await handler(event, data)
 
-dp.message.outer_middleware(ForceJoinMiddleware())
-dp.callback_query.outer_middleware(ForceJoinMiddleware())
+dp.message.outer_middleware(CustomSecurityMiddleware())
+dp.callback_query.outer_middleware(CustomSecurityMiddleware())
 
 # ---------------------------------------------------------------------------
 # 6. Keyboards
@@ -447,11 +573,27 @@ async def start_handler(message: Message, state: FSMContext):
     await state.clear()
     with SessionLocal() as db:
         user = get_or_create_db_user(db, message.from_user)
+        rank_name, _ = calculate_user_rank(db, user.id)
         welcome_txt = (
             f"🌟 سلام **{user.first_name or ''}** عزیز، به تحریم‌شکن شَب‌راه خوش آمدید.\n\n"
+            f"📊 رتبه کاربری شما: **{rank_name}**\n"
             f"موجودی فعلی شما: **{int(user.balance):,}** تومان\n\n"
             "لطفاً جهت خرید یا مدیریت اشتراک‌های خود از دکمه‌های زیر استفاده کنید."
         )
+        
+        banner_url = config.get("WELCOME_BANNER_URL")
+        if banner_url:
+            try:
+                await message.answer_photo(
+                    photo=banner_url,
+                    caption=welcome_txt,
+                    reply_markup=main_menu_keyboard(message.from_user.id),
+                    parse_mode="Markdown"
+                )
+                return
+            except Exception as e:
+                logger.error(f"Error sending welcome banner photo: {e}")
+
         await message.reply(welcome_txt, reply_markup=main_menu_keyboard(message.from_user.id), parse_mode="Markdown")
 
 @router.callback_query(F.data == "btn_main_menu")
@@ -460,11 +602,35 @@ async def main_menu_callback(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     with SessionLocal() as db:
         user = get_or_create_db_user(db, callback.from_user)
+        rank_name, _ = calculate_user_rank(db, user.id)
         welcome_txt = (
             f"🌟 منوی اصلی سیستم\n\n"
+            f"📊 سطح کاربری شما: **{rank_name}**\n"
             f"موجودی کیف پول شما: **{int(user.balance):,}** تومان"
         )
-        await callback.message.edit_text(welcome_txt, reply_markup=main_menu_keyboard(callback.from_user.id))
+        
+        banner_url = config.get("WELCOME_BANNER_URL")
+        if banner_url:
+            try:
+                await callback.message.delete()
+            except Exception:
+                pass
+            try:
+                await callback.message.answer_photo(
+                    photo=banner_url,
+                    caption=welcome_txt,
+                    reply_markup=main_menu_keyboard(callback.from_user.id),
+                    parse_mode="Markdown"
+                )
+                await callback.answer()
+                return
+            except Exception as e:
+                logger.error(f"Error showing welcome banner photo in menu callback: {e}")
+
+        try:
+            await callback.message.edit_text(welcome_txt, reply_markup=main_menu_keyboard(callback.from_user.id))
+        except Exception:
+            await callback.message.answer(welcome_txt, reply_markup=main_menu_keyboard(callback.from_user.id))
         await callback.answer()
 
 @router.callback_query(F.data == "btn_support")
@@ -497,6 +663,7 @@ async def wallet_callback(callback: CallbackQuery):
         )
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🏧 افزایش موجودی (کارت به کارت)", callback_data="btn_charge_wallet", style="success")],
+            [InlineKeyboardButton(text="💎 شارژ با ارز دیجیتال (Crypto)", callback_data="btn_charge_crypto", style="success")],
             [InlineKeyboardButton(text="🔙 بازگشت", callback_data="btn_main_menu")]
         ])
         await callback.message.edit_text(txt, reply_markup=kb, parse_mode="Markdown")
@@ -525,14 +692,24 @@ async def process_charge_amount(message: Message, state: FSMContext):
         
     await state.update_data(charge_amount=amount)
     
+    card_num = config['CARD_NUMBER']
+    card_holder_name = config['CARD_HOLDER']
     payment_txt = (
         "🧾 **درخواست واریز کارت به کارت**\n\n"
         f"💵 مبلغ قابل پرداخت: **{amount:,}** تومان\n\n"
-        f"💳 شماره کارت جهت واریز:\n`{config['CARD_NUMBER']}`\n\n"
-        f"👤 به نام:\n**{config['CARD_HOLDER']}**\n\n"
+        f"💳 شماره کارت جهت واریز:\n`{card_num}`\n\n"
+        f"👤 به نام:\n**{card_holder_name}**\n\n"
         "⚠️ لطفاً پس از انتقال وجه، تصویر فیش یا رسید واریزی خود را در همین بخش ارسال کنید."
     )
-    await message.reply(payment_txt, reply_markup=back_to_menu_keyboard(), parse_mode="Markdown")
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 کپی شماره کارت", copy_text={"text": card_num}, style="success")],
+        [InlineKeyboardButton(text="📋 کپی نام دارنده کارت", copy_text={"text": card_holder_name}, style="primary")],
+        [InlineKeyboardButton(text="📋 کپی مبلغ (تومان)", copy_text={"text": str(amount)}, style="primary")],
+        [InlineKeyboardButton(text="🔙 بازگشت", callback_data="btn_main_menu")]
+    ])
+    
+    await message.reply(payment_txt, reply_markup=kb, parse_mode="Markdown")
     await state.set_state(Form.waiting_for_receipt)
 
 @router.message(Form.waiting_for_receipt, F.photo)
@@ -579,12 +756,122 @@ async def process_receipt_photo(message: Message, state: FSMContext):
             logger.error(f"Error notifying admin {admin_id}: {e}")
 
 # ---------------------------------------------------------------------------
+# 8.1 Crypto Deposit Processing
+# ---------------------------------------------------------------------------
+@router.callback_query(F.data == "btn_charge_crypto")
+async def charge_crypto_callback(callback: CallbackQuery):
+    """Displays accessible cryptocurrency networks to user."""
+    kb = []
+    if config.get("TON_ADDRESS"):
+        kb.append([InlineKeyboardButton(text="💎 شبکه TON", callback_data="cry_TON")])
+    if config.get("USDT_ADDRESS"):
+        kb.append([InlineKeyboardButton(text="💵 شبکه USDT (TRC-20)", callback_data="cry_USDT")])
+    if config.get("TRX_ADDRESS"):
+        kb.append([InlineKeyboardButton(text="🔴 شبکه TRX", callback_data="cry_TRX")])
+        
+    if not kb:
+        return await callback.answer("⚠️ در حال حاضر هیچ درگاه پرداخت رمزارزی توسط مدیریت ثبت نشده است.", show_alert=True)
+        
+    kb.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="btn_wallet")])
+    await callback.message.edit_text("⚙️ لطفاً رمزارز مورد نظر خود را جهت واریز وجه انتخاب کنید:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("cry_"))
+async def process_crypto_asset(callback: CallbackQuery, state: FSMContext):
+    """Instructs clients with transaction targets and instructions."""
+    asset = callback.data.split("_")[1]
+    addr_key = f"{asset}_ADDRESS"
+    address = config.get(addr_key, "")
+    
+    if not address:
+        return await callback.answer("❌ آدرس این کیف پول پیکربندی نشده است.", show_alert=True)
+        
+    await state.update_data(crypto_asset=asset, crypto_address=address)
+    
+    crypto_instructions = (
+        f"💎 **پرداخت با رمزارز {asset}**\n\n"
+        f"📍 لطفاً مبلغ مورد نظر خود را به آدرس زیر واریز نمایید:\n\n"
+        f"`{address}`\n\n"
+        "⚠️ توجه: پس از تکمیل انتقال، لطفا کد پیگیری (TXID / Hash) یا عکس رسید پرداخت خود را در همین بخش ارسال نمایید."
+    )
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 کپی آدرس کیف پول", copy_text={"text": address}, style="success")],
+        [InlineKeyboardButton(text="🔙 بازگشت", callback_data="btn_charge_crypto")]
+    ])
+    
+    await callback.message.edit_text(crypto_instructions, reply_markup=kb, parse_mode="Markdown")
+    await state.set_state(Form.waiting_for_crypto_receipt)
+    await callback.answer()
+
+@router.message(Form.waiting_for_crypto_receipt)
+async def process_crypto_receipt(message: Message, state: FSMContext):
+    """Persists verification transaction records inside local databases."""
+    state_data = await state.get_data()
+    asset = state_data["crypto_asset"]
+    photo_id = message.photo[-1].file_id if message.photo else None
+    tx_hash = message.text.strip() if message.text else None
+    
+    if not photo_id and not tx_hash:
+        return await message.reply("❌ خطا: لطفاً یک فیش تصویری ارسال کنید یا کد پیگیری (TXID) تراکنش را به صورت متنی وارد کنید.")
+        
+    with SessionLocal() as db:
+        user = get_or_create_db_user(db, message.from_user)
+        tx = DBTransaction(
+            user_id=user.id,
+            type=f"Crypto_{asset}",
+            amount=0.0,
+            status="pending",
+            description=f"درخواست واریز رمزارز {asset}" + (f" با کد پیگیری: {tx_hash}" if tx_hash else ""),
+            receipt_image_id=photo_id,
+            tx_hash=tx_hash
+        )
+        db.add(tx)
+        db.commit()
+        tx_id = tx.id
+        
+    await message.reply("✅ رسید تراکنش رمزارز شما با موفقیت ثبت شد و جهت بررسی در اختیار مدیریت قرار گرفت.", reply_markup=back_to_menu_keyboard())
+    await state.clear()
+    
+    admin_cap = (
+        f"💎 **واریز رمزارز جدید ({asset})**\n\n"
+        f"👤 کاربر: {message.from_user.first_name} ({message.from_user.id})\n"
+        f"🔑 هش تراکنش: `{tx_hash or 'ارسال نشده'}`\n\n"
+        f"جهت تایید این واریزی می‌توانید با تخصیص موجودی دستی از منوی ادمین اقدام نمایید."
+    )
+    
+    admin_markup = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ تایید و شارژ دستی کاربر", callback_data="adm_charge_user"),
+            InlineKeyboardButton(text="❌ رد رسید", callback_data=f"tx_reject_{tx_id}", style="danger")
+        ]
+    ])
+    
+    for admin_id in config["ADMIN_IDS"]:
+        try:
+            if photo_id:
+                await bot.send_photo(chat_id=admin_id, photo=photo_id, caption=admin_cap, reply_markup=admin_markup, parse_mode="Markdown")
+            else:
+                await bot.send_message(chat_id=admin_id, text=admin_cap, reply_markup=admin_markup, parse_mode="Markdown")
+        except Exception as e:
+            logger.error(f"Error alerting admins for crypto transaction: {e}")
+
+# ---------------------------------------------------------------------------
 # 9. Purchase Flow with Premium Styles & Override Plan Logic
 # ---------------------------------------------------------------------------
 @router.callback_query(F.data == "btn_buy_service")
 async def buy_service_callback(callback: CallbackQuery, state: FSMContext):
     """Creates plan selection displaying overrides customized by administrators."""
     await state.clear()
+    
+    # Check if Shop is closed
+    if config.get("SHOP_CLOSED") and callback.from_user.id not in config["ADMIN_IDS"]:
+        return await callback.message.edit_text(
+            "⚠️ **فروشگاه موقتاً تعطیل است**\n\nامکان ثبت سفارش جدید در حال حاضر وجود ندارد. از صبر و شکیبایی شما سپاسگزاریم.",
+            reply_markup=back_to_menu_keyboard(),
+            parse_mode="Markdown"
+        )
+        
     await callback.message.edit_text("⏳ در حال دریافت لیست پلن‌ها از سرور...")
     
     plans_data = api.get_plans()
@@ -596,15 +883,25 @@ async def buy_service_callback(callback: CallbackQuery, state: FSMContext):
         return await callback.message.edit_text("🛒 در حال حاضر پلن فعالی جهت فروش موجود نیست.", reply_markup=back_to_menu_keyboard())
         
     kb = []
+    row = []
     with SessionLocal() as db:
         for p in plans:
-            # Check for customized pricing/titles overrides locally
             override = db.query(DBPlanOverride).filter(DBPlanOverride.plan_id == p['id']).first()
+            if override and override.is_hidden:
+                continue
+                
             p_title = override.custom_title if (override and override.custom_title) else p['title']
             p_price = int(override.custom_price) if (override and override.custom_price is not None) else int(p['price'])
             
             btn_txt = f"📦 {p_title} - {p_price:,} ت"
-            kb.append([InlineKeyboardButton(text=btn_txt, callback_data=f"buy_plan_{p['id']}_{p_price}")])
+            row.append(InlineKeyboardButton(text=btn_txt, callback_data=f"buy_plan_{p['id']}_{p_price}"))
+            
+            if len(row) == 2:
+                kb.append(row)
+                row = []
+                
+    if row:
+        kb.append(row)
             
     kb.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="btn_main_menu")])
     await callback.message.edit_text("🛒 لطفاً یکی از پلن‌های زیر را جهت خرید انتخاب کنید:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
@@ -613,6 +910,10 @@ async def buy_service_callback(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("buy_plan_"))
 async def buy_plan_callback(callback: CallbackQuery, state: FSMContext):
     """Evaluates checkout affordability and requests custom service descriptor."""
+    # Check shop status
+    if config.get("SHOP_CLOSED") and callback.from_user.id not in config["ADMIN_IDS"]:
+        return await callback.answer("⚠️ فروشگاه موقتاً تعطیل است و امکان ثبت سفارش وجود ندارد.", show_alert=True)
+
     parts = callback.data.split("_")
     plan_id = int(parts[2])
     price = int(parts[3])
@@ -633,12 +934,45 @@ async def buy_plan_callback(callback: CallbackQuery, state: FSMContext):
             return await callback.message.edit_text(insufficient_txt, reply_markup=kb, parse_mode="Markdown")
             
     await state.update_data(buy_plan_id=plan_id, buy_price=price)
-    await callback.message.edit_text(
-        "✏️ لطفاً یک نام کوتاه انگلیسی (فقط حروف و اعداد بین ۳ تا ۱۲ کاراکتر) برای سرویس خود وارد کنید:\n\nمثال: `myvpn`",
-        reply_markup=back_to_menu_keyboard(),
-        parse_mode="Markdown"
+    
+    name_instructions = (
+        "✏️ لطفاً یک نام کوتاه انگلیسی (فقط حروف و اعداد بین ۳ تا ۱۲ کاراکتر) برای سرویس خود وارد کنید:\n\n"
+        "مثال: `myvpn`\n\n"
+        "🎲 یا می‌توانید از دکمه زیر جهت تولید نام کاملاً تصادفی استفاده کنید."
     )
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎲 تولید نام تصادفی", callback_data="btn_generate_random_name", style="primary")],
+        [InlineKeyboardButton(text="🔙 بازگشت", callback_data="btn_buy_service")]
+    ])
+    
+    await callback.message.edit_text(name_instructions, reply_markup=kb, parse_mode="Markdown")
     await state.set_state(Form.waiting_for_service_name)
+    await callback.answer()
+
+@router.callback_query(F.data == "btn_generate_random_name", Form.waiting_for_service_name)
+async def generate_random_name_callback(callback: CallbackQuery, state: FSMContext):
+    """Autogenerates a unique service configuration alias name."""
+    rand_name = "v" + "".join(random.choices(string.ascii_lowercase + string.digits, k=7))
+    await state.update_data(buy_service_name=rand_name)
+    
+    state_data = await state.get_data()
+    price = state_data["buy_price"]
+    
+    confirm_txt = (
+        "🧾 **پیش‌فاکتور نهایی خرید**\n\n"
+        f"🖥 نام سرویس تصادفی تولید شده: `{rand_name}`\n"
+        f"💵 قیمت نهایی: **{price:,}** تومان\n\n"
+        "آیا مایل به پرداخت و نهایی کردن خرید هستید؟"
+    )
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ پرداخت و تایید خرید", callback_data="confirm_buy_final", style="success"),
+            InlineKeyboardButton(text="❌ انصراف", callback_data="btn_main_menu", style="danger")
+        ]
+    ])
+    await callback.message.edit_text(confirm_txt, reply_markup=kb, parse_mode="Markdown")
     await callback.answer()
 
 @router.message(Form.waiting_for_service_name)
@@ -649,7 +983,6 @@ async def process_service_name(message: Message, state: FSMContext):
         return await message.reply("❌ خطا: نام سرویس فقط باید شامل حروف انگلیسی و اعداد بین ۳ تا ۱۲ کاراکتر باشد. مجدداً ارسال کنید:")
         
     state_data = await state.get_data()
-    plan_id = state_data["buy_plan_id"]
     price = state_data["buy_price"]
     
     await state.update_data(buy_service_name=name)
@@ -672,6 +1005,9 @@ async def process_service_name(message: Message, state: FSMContext):
 @router.callback_query(F.data == "confirm_buy_final")
 async def confirm_buy_final_callback(callback: CallbackQuery, state: FSMContext):
     """Requests account creation and balance deduction, then returns the credential URL & Configs."""
+    if config.get("SHOP_CLOSED") and callback.from_user.id not in config["ADMIN_IDS"]:
+        return await callback.answer("⚠️ فروشگاه موقتاً تعطیل است و امکان ثبت سفارش جدید وجود ندارد.", show_alert=True)
+
     state_data = await state.get_data()
     plan_id = state_data.get("buy_plan_id")
     name = state_data.get("buy_service_name")
@@ -680,7 +1016,7 @@ async def confirm_buy_final_callback(callback: CallbackQuery, state: FSMContext)
     if not plan_id or not name:
         return await callback.message.edit_text("❌ خطا در بازیابی اطلاعات نشست خرید. مجدداً اقدام کنید.", reply_markup=back_to_menu_keyboard())
         
-    await callback.message.edit_text("⏳ در حال برقراری ارتباط با سرور و پیکربندی اکانت...")
+    await callback.message.edit_text("⏳ در حال برقراری ارتباط با سرور...)")
     
     with SessionLocal() as db:
         user = db.query(DBUser).filter(DBUser.telegram_id == callback.from_user.id).first()
@@ -714,6 +1050,7 @@ async def confirm_buy_final_callback(callback: CallbackQuery, state: FSMContext)
             
             sub_link = res_data.get("sub_url", "")
             configs_list = res_data.get("configs", [])
+            configs_list = [cfg for cfg in configs_list if "/sub/" not in cfg]
             
             success_txt = (
                 "🎉 **خرید شما با موفقیت انجام شد!**\n\n"
@@ -725,7 +1062,6 @@ async def confirm_buy_final_callback(callback: CallbackQuery, state: FSMContext)
                 for index, cfg in enumerate(configs_list[:3]):
                     success_txt += f"**کانفیگ {index+1}:**\n`{cfg}`\n\n"
             
-            # 10.0 copy button integration
             kb_list = [
                 [InlineKeyboardButton(text="📋 کپی سریع لینک اشتراک", copy_text={"text": sub_link}, style="success")],
                 [InlineKeyboardButton(text="🔗 باز کردن حساب کاربری (مینی‌اپ)", url=sub_link, style="primary")],
@@ -734,7 +1070,7 @@ async def confirm_buy_final_callback(callback: CallbackQuery, state: FSMContext)
             
             await callback.message.edit_text(success_txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_list), parse_mode="Markdown")
 
-            # Report purchase to Admins (Farsi report)
+            # Report purchase to Admins
             admin_msg = (
                 f"🔔 **گزارش خرید سرویس جدید**\n\n"
                 f"👤 خریدار: {user.first_name or 'نامشخص'} ({user.telegram_id})\n"
@@ -820,6 +1156,8 @@ async def srv_view_callback(callback: CallbackQuery):
     sub_url = details.get("sub_url") or srv.sub_url
     configs_list = details.get("configs", [])
     
+    configs_list = [cfg for cfg in configs_list if "/sub/" not in cfg]
+    
     with SessionLocal() as db:
         db_srv = db.query(DBService).get(srv_id)
         db_srv.status = status
@@ -836,7 +1174,6 @@ async def srv_view_callback(callback: CallbackQuery):
         f"🔗 **لینک اشتراک:**\n`{sub_url}`"
     )
     
-    # Elegant 2-column inline keyboard setup
     kb = [
         [
             InlineKeyboardButton(text="📋 کپی لینک اشتراک", copy_text={"text": sub_url}, style="success"),
@@ -860,7 +1197,6 @@ async def srv_view_callback(callback: CallbackQuery):
         InlineKeyboardButton(text="🔙 بازگشت به لیست", callback_data="btn_my_services")
     ])
     
-    # Administrative control restricted to admin accounts only
     if callback.from_user.id in config["ADMIN_IDS"]:
         toggle_txt = "🔴 غیرفعال کردن سرویس" if status == "active" else "🟢 فعال کردن سرویس"
         kb.append([InlineKeyboardButton(text=toggle_txt, callback_data=f"srv_toggle_{srv_id}", style="danger")])
@@ -921,33 +1257,64 @@ async def srv_qr_callback(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("srv_renew_"))
 async def srv_renew_callback(callback: CallbackQuery):
-    """Queries and renders list of selectable renewal plans for active service."""
+    """Forces renewal only to current service plan to maintain consistent parameters."""
+    if config.get("SHOP_CLOSED") and callback.from_user.id not in config["ADMIN_IDS"]:
+        return await callback.message.edit_text(
+            "⚠️ **فروشگاه موقتاً تعطیل است**\n\nامکان تمدید سرویس در حال حاضر وجود ندارد. از صبر و شکیبایی شما سپاسگزاریم.",
+            reply_markup=back_to_menu_keyboard(),
+            parse_mode="Markdown"
+        )
+
     srv_id = int(callback.data.split("_")[2])
-    await callback.message.edit_text("⏳ در حال دریافت لیست پلن‌های تمدید...")
-    
-    plans_data = api.get_plans()
-    if not plans_data or not plans_data.get("success"):
-        return await callback.answer("❌ خطا در دریافت پلن‌ها.", show_alert=True)
-        
-    plans = plans_data.get("plans", [])
-    kb = []
+    await callback.message.edit_text("⏳ در حال استعلام مشخصات پلن فعلی از سرور...")
     
     with SessionLocal() as db:
-        for p in plans:
-            # Plan Overrides price logic
-            override = db.query(DBPlanOverride).filter(DBPlanOverride.plan_id == p['id']).first()
-            p_title = override.custom_title if (override and override.custom_title) else p['title']
-            p_price = int(override.custom_price) if (override and override.custom_price is not None) else int(p['price'])
+        srv = db.query(DBService).get(srv_id)
+        if not srv or not srv.plan_id:
+            return await callback.message.edit_text("❌ خطا: کد پلن اصلی متصل به این سرویس یافت نشد.", reply_markup=back_to_menu_keyboard())
             
-            kb.append([InlineKeyboardButton(text=f"🔄 تمدید با {p_title} - {p_price:,} ت", callback_data=f"renew_confirm_{srv_id}_{p['id']}_{p_price}")])
+        target_plan_id = srv.plan_id
+
+    plans_data = api.get_plans()
+    if not plans_data or not plans_data.get("success"):
+        return await callback.message.edit_text("❌ خطا در دریافت پلن‌ها از سرور.", reply_markup=back_to_menu_keyboard())
+        
+    plans = plans_data.get("plans", [])
+    matched_plan = None
+    for p in plans:
+        if p["id"] == target_plan_id:
+            matched_plan = p
+            break
             
-    kb.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"srv_view_{srv_id}")])
-    await callback.message.edit_text("🔄 یکی از پلن‌های زیر را جهت تمدید این سرویس انتخاب کنید:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    if not matched_plan:
+        return await callback.message.edit_text("❌ خطا: این پلن دیگر روی سرور اصلی فعال نیست یا امکان تمدید مستقیم آن وجود ندارد.", reply_markup=back_to_menu_keyboard())
+        
+    with SessionLocal() as db:
+        override = db.query(DBPlanOverride).filter(DBPlanOverride.plan_id == matched_plan['id']).first()
+        p_title = override.custom_title if (override and override.custom_title) else matched_plan['title']
+        p_price = int(override.custom_price) if (override and override.custom_price is not None) else int(matched_plan['price'])
+
+    kb = [
+        [InlineKeyboardButton(text=f"🔄 تایید تمدید با {p_title} - {p_price:,} ت", callback_data=f"renew_confirm_{srv_id}_{matched_plan['id']}_{p_price}")],
+        [InlineKeyboardButton(text="🔙 انصراف و بازگشت", callback_data=f"srv_view_{srv_id}")]
+    ]
+    
+    await callback.message.edit_text(
+        f"🔄 **درخواست تمدید سرویس: {srv.name}**\n\n"
+        f"📦 پلن فعلی شما: **{p_title}**\n"
+        f"💵 هزینه تمدید دوره: **{p_price:,}** تومان\n\n"
+        "آیا مایل هستید سرویس شما برای یک دوره دیگر تمدید شود؟",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb),
+        parse_mode="Markdown"
+    )
     await callback.answer()
 
 @router.callback_query(F.data.startswith("renew_confirm_"))
 async def renew_confirm_callback(callback: CallbackQuery):
     """Processes final renewal payment, deducts local balance, and registers state."""
+    if config.get("SHOP_CLOSED") and callback.from_user.id not in config["ADMIN_IDS"]:
+        return await callback.answer("⚠️ فروشگاه موقتاً تعطیل است و امکان ثبت سفارش وجود ندارد.", show_alert=True)
+
     parts = callback.data.split("_")
     srv_id = int(parts[2])
     plan_id = int(parts[3])
@@ -981,7 +1348,6 @@ async def renew_confirm_callback(callback: CallbackQuery):
             
         await callback.answer("🎉 سرویس شما با موفقیت تمدید شد!", show_alert=True)
 
-        # Farsi report for renewal
         admin_msg = (
             f"🔄 **گزارش تمدید سرویس**\n\n"
             f"👤 کاربر: {db_user.first_name or 'نامشخص'} ({db_user.telegram_id})\n"
@@ -1013,29 +1379,49 @@ async def admin_panel_callback(callback: CallbackQuery, state: FSMContext):
         total_users = db.query(DBUser).count()
         pending_txs = db.query(DBTransaction).filter(DBTransaction.status == "pending").all()
         
+    maint_status = "🔴 فعال (تعمیرات)" if config.get("MAINTENANCE_MODE") else "🟢 غیرفعال (عادی)"
+    shop_status = "🔴 بسته" if config.get("SHOP_CLOSED") else "🟢 باز"
+    
     txt = (
         "⚙️ **پنل مدیریت ربات فروشگاهی نماینده**\n\n"
         f"👥 کل کاربران عضو شده: **{total_users}** کاربر\n"
-        f"⏳ فیش‌های در انتظار بررسی: **{len(pending_txs)}** عدد\n"
+        f"⏳ فیش‌های در انتظار بررسی: **{len(pending_txs)}** عدد\n\n"
+        f"🔧 وضعیت تعمیرات: **{maint_status}**\n"
+        f"🛒 وضعیت فروشگاه: **{shop_status}**"
     )
     
     kb = [
         [
-            InlineKeyboardButton(text="📢 ارسال پیام همگانی (Broadcast)", callback_data="adm_broadcast", style="primary"),
+            InlineKeyboardButton(text=f"🔧 وضعیت تعمیرات: {'غیرفعال سازی' if config.get('MAINTENANCE_MODE') else 'فعال سازی'}", callback_data="adm_toggle_maint"),
+            InlineKeyboardButton(text=f"🛒 فروشگاه: {'باز کردن' if config.get('SHOP_CLOSED') else 'بستن'}", callback_data="adm_toggle_shop")
+        ],
+        [
+            InlineKeyboardButton(text="📢 ارسال پیام همگانی (Broadcast)", callback_data="adm_broadcast_mode_select", style="primary"),
             InlineKeyboardButton(text="📊 آمار سیستم (Stats)", callback_data="adm_stats", style="success")
         ],
         [
-            InlineKeyboardButton(text="👥 لیست کاربران دیتابیس", callback_data="adm_view_users_0"), 
-            InlineKeyboardButton(text="🛠 لیست سرویس‌ها", callback_data="adm_view_services_0")
+            InlineKeyboardButton(text="🔍 جستجوی کاربر", callback_data="adm_user_panel_search"),
+            InlineKeyboardButton(text="🔍 جستجوی سرویس", callback_data="adm_service_panel_search")
+        ],
+        [
+            InlineKeyboardButton(text="👥 لیست کل کاربران", callback_data="adm_view_users_0"), 
+            InlineKeyboardButton(text="🛠 لیست کل سرویس‌ها", callback_data="adm_view_services_0")
         ],
         [
             InlineKeyboardButton(text="💰 لیست تراکنش‌ها", callback_data="adm_view_txs_0"), 
-            InlineKeyboardButton(text="💳 تغییر دستی موجودی", callback_data="adm_charge_user")
+            InlineKeyboardButton(text="✏️ شخصی‌سازی قیمت پلن‌ها", callback_data="adm_plan_customize_menu", style="primary")
         ],
         [
-            InlineKeyboardButton(text="✏️ شخصی‌سازی قیمت پلن‌ها", callback_data="adm_plan_customize_menu", style="primary"),
             InlineKeyboardButton(text="🔌 استعلام موجودی وب‌سرویس اصلی", callback_data="adm_central_bal")
         ],
+        [
+            InlineKeyboardButton(text="📥 دانلود کاربران (CSV)", callback_data="adm_dl_users"),
+            InlineKeyboardButton(text="📥 دانلود تراکنش‌ها (CSV)", callback_data="adm_dl_txs")
+        ],
+        [
+            InlineKeyboardButton(text="📥 دانلود بکاپ SQL", callback_data="adm_dl_db_sql"),
+            InlineKeyboardButton(text="📥 دانلود بکاپ DB", callback_data="adm_dl_db_bin")
+        ]
     ]
     if pending_txs:
         kb.insert(0, [InlineKeyboardButton(text="✍️ بررسی فیش‌های در انتظار", callback_data="btn_admin_review_pending", style="success")])
@@ -1044,7 +1430,122 @@ async def admin_panel_callback(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
     await callback.answer()
 
+# ---------------------------------------------------------------------------
+# 11.0 Toggle Toggles (Maintenance & Shop Status)
+# ---------------------------------------------------------------------------
+@router.callback_query(F.data == "adm_toggle_maint")
+async def adm_toggle_maint(callback: CallbackQuery, state: FSMContext):
+    """Toggles active state of Maintenance Mode."""
+    if callback.from_user.id not in config["ADMIN_IDS"]: return
+    config["MAINTENANCE_MODE"] = not config.get("MAINTENANCE_MODE", False)
+    save_config_file()
+    status_word = "فعال" if config["MAINTENANCE_MODE"] else "غیرفعال"
+    await callback.answer(f"🔧 وضعیت تعمیرات ربات {status_word} شد.", show_alert=True)
+    await admin_panel_callback(callback, state)
+
+@router.callback_query(F.data == "adm_toggle_shop")
+async def adm_toggle_shop(callback: CallbackQuery, state: FSMContext):
+    """Toggles active state of Shop Open/Closed."""
+    if callback.from_user.id not in config["ADMIN_IDS"]: return
+    config["SHOP_CLOSED"] = not config.get("SHOP_CLOSED", False)
+    save_config_file()
+    status_word = "بسته" if config["SHOP_CLOSED"] else "باز"
+    await callback.answer(f"🛒 فروشگاه {status_word} شد.", show_alert=True)
+    await admin_panel_callback(callback, state)
+
+# ---------------------------------------------------------------------------
+# 11.0.1 Export and Download Tools
+# ---------------------------------------------------------------------------
+@router.callback_query(F.data == "adm_dl_users")
+async def download_users_csv(callback: CallbackQuery):
+    """Outputs internal registered users list into structured UTF-8 encoded CSV file format."""
+    if callback.from_user.id not in config["ADMIN_IDS"]: return
+    
+    out = io.StringIO()
+    writer = csv.writer(out)
+    writer.writerow(["ID", "Telegram ID", "Username", "First Name", "Balance (Tomans)", "Joined At", "Is Active", "Is Banned"])
+    
+    with SessionLocal() as db:
+        users = db.query(DBUser).all()
+        for u in users:
+            writer.writerow([u.id, u.telegram_id, u.username or "", u.first_name or "", u.balance, u.joined_at, u.is_active, u.is_banned])
+            
+    csv_bytes = out.getvalue().encode("utf-8")
+    doc = BufferedInputFile(csv_bytes, filename="users_export.csv")
+    
+    try:
+        await bot.send_document(chat_id=callback.from_user.id, document=doc, caption="📂 لیست کامل کاربران عضو ربات")
+        await callback.answer("✅ فایل با موفقیت صادر شد.")
+    except Exception as e:
+        await callback.answer(f"❌ خطا در ارسال فایل: {e}", show_alert=True)
+
+@router.callback_query(F.data == "adm_dl_txs")
+async def download_transactions_csv(callback: CallbackQuery):
+    """Compiles local transactions data entries to standard CSV structure."""
+    if callback.from_user.id not in config["ADMIN_IDS"]: return
+    
+    out = io.StringIO()
+    writer = csv.writer(out)
+    writer.writerow(["ID", "User ID", "Type", "Amount", "Status", "Description", "Date", "Receipt Image ID", "TX Hash"])
+    
+    with SessionLocal() as db:
+        txs = db.query(DBTransaction).all()
+        for t in txs:
+            writer.writerow([t.id, t.user_id, t.type, t.amount, t.status, t.description or "", t.date, t.receipt_image_id or "", t.tx_hash or ""])
+            
+    csv_bytes = out.getvalue().encode("utf-8")
+    doc = BufferedInputFile(csv_bytes, filename="transactions_export.csv")
+    
+    try:
+        await bot.send_document(chat_id=callback.from_user.id, document=doc, caption="📂 لیست کامل تراکنش‌های ثبت شده")
+        await callback.answer("✅ فایل با موفقیت صادر شد.")
+    except Exception as e:
+        await callback.answer(f"❌ خطا در ارسال فایل: {e}", show_alert=True)
+
+@router.callback_query(F.data == "adm_dl_db_bin")
+async def download_db_binary(callback: CallbackQuery):
+    """Packages live database file for direct secure administrative downloads."""
+    if callback.from_user.id not in config["ADMIN_IDS"]: return
+    
+    db_file_path = "reseller_bot.db"
+    if not os.path.exists(db_file_path):
+        return await callback.answer("❌ دیتابیس در مسیر جاری یافت نشد.", show_alert=True)
+        
+    try:
+        doc = FSInputFile(path=db_file_path, filename="reseller_bot.db")
+        await bot.send_document(chat_id=callback.from_user.id, document=doc, caption="📂 دیتابیس باینری فعلی سیستم (SQLite)")
+        await callback.answer("✅ فایل دیتابیس با موفقیت ارسال شد.")
+    except Exception as e:
+        await callback.answer(f"❌ خطا در ارسال دیتابیس: {e}", show_alert=True)
+
+@router.callback_query(F.data == "adm_dl_db_sql")
+async def download_db_sql_dump(callback: CallbackQuery):
+    """Produces structured logical SQL export containing DDL/DML statements."""
+    if callback.from_user.id not in config["ADMIN_IDS"]: return
+    
+    import sqlite3
+    db_file_path = "reseller_bot.db"
+    if not os.path.exists(db_file_path):
+        return await callback.answer("❌ دیتابیس یافت نشد.", show_alert=True)
+        
+    try:
+        conn = sqlite3.connect(db_file_path)
+        out = io.StringIO()
+        for line in conn.iterdump():
+            out.write(line + "\n")
+        conn.close()
+        
+        sql_bytes = out.getvalue().encode("utf-8")
+        doc = BufferedInputFile(sql_bytes, filename="reseller_bot_dump.sql")
+        
+        await bot.send_document(chat_id=callback.from_user.id, document=doc, caption="📂 بکاپ کامل ساختاری و داده‌ای SQL")
+        await callback.answer("✅ بکاپ SQL با موفقیت ارسال شد.")
+    except Exception as e:
+        await callback.answer(f"❌ خطا در تولید بکاپ: {e}", show_alert=True)
+
+# ---------------------------------------------------------------------------
 # 11.1 Stats Panel
+# ---------------------------------------------------------------------------
 @router.callback_query(F.data == "adm_stats")
 async def adm_stats_callback(callback: CallbackQuery):
     """Queries and displays local database and central balance diagnostics."""
@@ -1061,8 +1562,6 @@ async def adm_stats_callback(callback: CallbackQuery):
         total_users = db.query(DBUser).count()
         total_srv = db.query(DBService).count()
         total_pending = db.query(DBTransaction).filter(DBTransaction.status == "pending").count()
-        
-        # Calculate sum of all user balances
         user_balances_sum = sum(u.balance for u in db.query(DBUser).all())
         
     txt = (
@@ -1080,7 +1579,9 @@ async def adm_stats_callback(callback: CallbackQuery):
     await callback.message.edit_text(txt, reply_markup=kb, parse_mode="Markdown")
     await callback.answer()
 
+# ---------------------------------------------------------------------------
 # 11.2 Central API Balance Check
+# ---------------------------------------------------------------------------
 @router.callback_query(F.data == "adm_central_bal")
 async def adm_central_bal_callback(callback: CallbackQuery):
     """Establishes transaction call on master API to query central reseller balance."""
@@ -1104,7 +1605,9 @@ async def adm_central_bal_callback(callback: CallbackQuery):
     await callback.message.edit_text(txt, reply_markup=kb, parse_mode="Markdown")
     await callback.answer()
 
+# ---------------------------------------------------------------------------
 # 11.3 Plan Customization (Overrides) Menu
+# ---------------------------------------------------------------------------
 @router.callback_query(F.data == "adm_plan_customize_menu")
 async def adm_plan_customize_menu(callback: CallbackQuery, state: FSMContext):
     """Presents existing plans from central server to override title or price."""
@@ -1121,34 +1624,71 @@ async def adm_plan_customize_menu(callback: CallbackQuery, state: FSMContext):
     with SessionLocal() as db:
         for p in plans:
             override = db.query(DBPlanOverride).filter(DBPlanOverride.plan_id == p['id']).first()
+            if override and override.is_hidden:
+                color_emoji = "🔴"
+            elif override and (override.custom_title or override.custom_price is not None):
+                color_emoji = "🔵"
+            else:
+                color_emoji = "🟢"
+                
             p_title = override.custom_title if (override and override.custom_title) else p['title']
             p_price = int(override.custom_price) if (override and override.custom_price is not None) else int(p['price'])
             
-            btn_txt = f"📦 {p_title} ({p_price:,} ت)"
+            btn_txt = f"{color_emoji} {p_title} ({p_price:,} ت)"
             kb.append([InlineKeyboardButton(text=btn_txt, callback_data=f"adm_override_select_{p['id']}")])
             
     kb.append([InlineKeyboardButton(text="🔙 بازگشت به پنل ادمین", callback_data="btn_admin_panel")])
     await callback.message.edit_text(
-        "✏️ پلنی که قصد تغییر مشخصات محلی (عنوان یا قیمت نهایی فروش) آن را دارید انتخاب کنید:",
+        "✏️ پلنی که قصد تغییر مشخصات محلی (عنوان، قیمت یا وضعیت نمایش) آن را دارید انتخاب کنید:\n\n"
+        "🟢: فعال و بدون تغییر\n"
+        "🔵: ویرایش شده محلی\n"
+        "🔴: پنهان شده از دید کاربران",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=kb)
     )
     await callback.answer()
 
 @router.callback_query(F.data.startswith("adm_override_select_"))
 async def adm_override_select_callback(callback: CallbackQuery, state: FSMContext):
-    """Displays choices to modify either title or price of the selected plan."""
+    """Displays choices to modify either title, price, or visibility of the selected plan."""
     plan_id = int(callback.data.split("_")[3])
     await state.update_data(target_plan_id=plan_id)
+    
+    with SessionLocal() as db:
+        override = db.query(DBPlanOverride).get(plan_id)
+        is_hidden = override.is_hidden if override else False
+        
+    visibility_btn_text = "👁‍🗨 نمایش مجدد به کاربران" if is_hidden else "👁‍🗨 پنهان کردن از کاربران"
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="✏️ تغییر عنوان پلن (Title)", callback_data="adm_over_title"),
             InlineKeyboardButton(text="💵 تغییر قیمت فروش (Price)", callback_data="adm_over_price")
         ],
+        [InlineKeyboardButton(text=visibility_btn_text, callback_data="adm_over_toggle_visibility")],
         [InlineKeyboardButton(text="🔙 بازگشت به لیست", callback_data="adm_plan_customize_menu")]
     ])
     await callback.message.edit_text(f"شما در حال ویرایش پلن (ID: {plan_id}) هستید. فیلد مورد نظر را انتخاب کنید:", reply_markup=kb)
     await callback.answer()
+
+@router.callback_query(F.data == "adm_over_toggle_visibility")
+async def adm_over_toggle_visibility_callback(callback: CallbackQuery, state: FSMContext):
+    """Toggles visible state parameter of the specified virtual plan layout."""
+    state_data = await state.get_data()
+    plan_id = state_data["target_plan_id"]
+    
+    with SessionLocal() as db:
+        override = db.query(DBPlanOverride).get(plan_id)
+        if not override:
+            override = DBPlanOverride(plan_id=plan_id, is_hidden=True)
+            db.add(override)
+        else:
+            override.is_hidden = not override.is_hidden
+        db.commit()
+        current_status = override.is_hidden
+        
+    msg = "❌ پلن از دید کاربران پنهان شد." if current_status else "✅ پلن مجدداً برای کاربران فعال و نمایان شد."
+    await callback.answer(msg, show_alert=True)
+    await adm_plan_customize_menu(callback, state)
 
 @router.callback_query(F.data.startswith("adm_over_"))
 async def adm_over_fields_callback(callback: CallbackQuery, state: FSMContext):
@@ -1157,7 +1697,7 @@ async def adm_over_fields_callback(callback: CallbackQuery, state: FSMContext):
     if field == "title":
         await callback.message.edit_text("✏️ عنوان جدید پلن را وارد کنید (مثال: `پلن برنزی ۳۰ گیگ`):", reply_markup=back_to_menu_keyboard(), parse_mode="Markdown")
         await state.set_state(AdminStates.waiting_for_plan_title)
-    else:
+    elif field == "price":
         await callback.message.edit_text("💵 قیمت جدید فروش به کاربران را به **تومان** وارد کنید (به صورت عدد انگلیسی):", reply_markup=back_to_menu_keyboard(), parse_mode="Markdown")
         await state.set_state(AdminStates.waiting_for_plan_price)
     await callback.answer()
@@ -1208,45 +1748,222 @@ async def process_plan_price_override(message: Message, state: FSMContext):
     ]))
     await state.clear()
 
-# 11.4 Manual User Recharge Flow
-@router.callback_query(F.data == "adm_charge_user")
-async def adm_charge_user_callback(callback: CallbackQuery, state: FSMContext):
-    """Prompts target user Telegram identifier to process manual ledger changes."""
+# ---------------------------------------------------------------------------
+# 11.4 Individual User Configuration Management Console (Search User)
+# ---------------------------------------------------------------------------
+@router.callback_query(F.data == "adm_user_panel_search")
+async def adm_user_panel_search(callback: CallbackQuery, state: FSMContext):
+    """Requests user Telegram ID or Username to launch search query."""
     if callback.from_user.id not in config["ADMIN_IDS"]: return
     
     await callback.message.edit_text(
-        "✏️ لطفاً آیدی عددی تلگرام کاربر هدف را وارد کنید:",
+        "✏️ آیدی عددی تلگرام یا **نام کاربری بدون @** کاربر مورد نظر را جهت جستجو وارد کنید:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔙 لغو", callback_data="btn_admin_panel", style="danger")]
+            [InlineKeyboardButton(text="🔙 بازگشت به پنل مدیریت", callback_data="btn_admin_panel")]
         ])
     )
-    await state.set_state(AdminStates.waiting_for_charge_userid)
+    await state.set_state(AdminStates.waiting_for_user_lookup)
     await callback.answer()
 
-@router.message(AdminStates.waiting_for_charge_userid)
-async def adm_process_charge_userid(message: Message, state: FSMContext):
-    """Validates Telegram User ID existence and requests credit/deduction value."""
-    uid_str = message.text.strip()
-    if not uid_str.isdigit():
-        return await message.reply("❌ خطا: لطفاً آیدی تلگرام را به صورت عددی معتبر وارد کنید.")
-        
-    target_uid = int(uid_str)
+@router.message(AdminStates.waiting_for_user_lookup)
+async def process_user_lookup(message: Message, state: FSMContext):
+    """Validates query and pulls matching user database record."""
+    query = message.text.strip()
+    
     with SessionLocal() as db:
-        user = db.query(DBUser).filter(DBUser.telegram_id == target_uid).first()
-        if not user:
-            return await message.reply("❌ خطا: کاربر مورد نظر در پایگاه داده ربات یافت نشد.")
+        if query.isdigit():
+            user = db.query(DBUser).filter(DBUser.telegram_id == int(query)).first()
+        else:
+            clean_username = query.replace("@", "")
+            user = db.query(DBUser).filter(DBUser.username.ilike(clean_username)).first()
             
-    await state.update_data(charge_target_id=target_uid)
-    await message.reply(
-        f"👤 کاربر انتخاب شد: **{user.first_name or 'نامشخص'}**\n\n"
-        "✏️ حالا مبلغ تغییر تراز را به **تومان** وارد کنید:\n"
-        "_(جهت افزایش موجودی عدد مثبت مانند 50000 و جهت کسر موجودی عدد منفی مانند -20000 وارد کنید)_",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔙 لغو عملیات", callback_data="btn_admin_panel", style="danger")]
-        ]),
-        parse_mode="Markdown"
+        if not user:
+            return await message.reply("❌ خطا: کاربر مورد نظر در پایگاه داده ربات یافت نشد. مجددا تلاش کنید:")
+            
+        rank, total_spent = calculate_user_rank(db, user.id)
+        ban_status = "🚫 مسدود شده" if user.is_banned else "🟢 فعال"
+        
+    await state.clear()
+    
+    txt = (
+        "👤 **مشخصات و مدیریت تعاملی کاربر**\n\n"
+        f"🏷 نام کاربر: **{user.first_name or 'نامشخص'}**\n"
+        f"🌐 شناسه کاربری: `{user.telegram_id}`\n"
+        f"💬 نام کاربری: @{user.username or 'ندارد'}\n"
+        f"💳 موجودی کیف پول: **{int(user.balance):,}** تومان\n"
+        f"🎖 سطح و رتبه کاربری: **{rank}**\n"
+        f"📊 مجموع حجم تراکنش‌های موفق: **{int(total_spent):,}** تومان\n"
+        f"📅 تاریخ عضویت: {user.joined_at.strftime('%Y-%m-%d %H:%M')}\n"
+        f"📡 وضعیت دسترسی: **{ban_status}**"
     )
-    await state.set_state(AdminStates.waiting_for_charge_amount)
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="💳 شارژ دستی حساب", callback_data=f"usr_action_charge_{user.telegram_id}"),
+            InlineKeyboardButton(text="✉️ ارسال پیام مستقیم", callback_data=f"usr_action_msg_{user.telegram_id}")
+        ],
+        [InlineKeyboardButton(text="🚫 مسدود / آزاد سازی کاربر", callback_data=f"usr_action_toggleban_{user.telegram_id}")],
+        [InlineKeyboardButton(text="🔙 بازگشت به پنل مدیریت", callback_data="btn_admin_panel")]
+    ])
+    
+    await message.reply(txt, reply_markup=kb, parse_mode="Markdown")
+
+# ---------------------------------------------------------------------------
+# 11.4.1 Search Service Panel
+# ---------------------------------------------------------------------------
+@router.callback_query(F.data == "adm_service_panel_search")
+async def adm_service_panel_search(callback: CallbackQuery, state: FSMContext):
+    """Requests Service ID, Name, or UUID to locate target service record."""
+    if callback.from_user.id not in config["ADMIN_IDS"]: return
+    
+    await callback.message.edit_text(
+        "✏️ **کد لایو سرویس (ID)**، **نام سرویس** یا **کد UUID** هدف را جهت جستجو وارد کنید:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 بازگشت به پنل مدیریت", callback_data="btn_admin_panel")]
+        ])
+    )
+    await state.set_state(AdminStates.waiting_for_service_lookup)
+    await callback.answer()
+
+@router.message(AdminStates.waiting_for_service_lookup)
+async def process_service_lookup(message: Message, state: FSMContext):
+    """Locates and displays specific service profile details and direct toggle controls."""
+    query = message.text.strip()
+    
+    with SessionLocal() as db:
+        if query.isdigit():
+            srv = db.query(DBService).filter((DBService.service_id == int(query)) | (DBService.id == int(query))).first()
+        else:
+            srv = db.query(DBService).filter((DBService.name.ilike(query)) | (DBService.uuid == query)).first()
+            
+        if not srv:
+            return await message.reply("❌ خطا: سرویس مورد نظر در سیستم یافت نشد. مجددا تلاش کنید:")
+            
+    # Load diagnostics live
+    details = api.get_service_details(srv.service_id)
+    status_str = "ناشناس"
+    traffic_str = "نامشخص"
+    sub_url = srv.sub_url or "نامشخص"
+    
+    if details and details.get("success"):
+        status_str = details.get("status", "active")
+        total_gb = details.get("traffic_total_gb", 0)
+        used_gb = details.get("traffic_used_gb", 0)
+        remain_gb = max(0.0, total_gb - used_gb)
+        traffic_str = f"مصرف {used_gb:.2f} از {total_gb:.2f} GB (باقیمانده: {remain_gb:.2f} GB)"
+        sub_url = details.get("sub_url", srv.sub_url)
+        
+    txt = (
+        "📡 **اطلاعات فنی سرویس یافت شده**\n\n"
+        f"🖥 نام سرویس: **{srv.name}**\n"
+        f"🔑 شناسه وب‌سرویس اصلی: `{srv.service_id}`\n"
+        f"🌐 شناسه کاربری خریدار (DB ID): `{srv.user_id}`\n"
+        f"📊 مصرف ترافیک: **{traffic_str}**\n"
+        f"📅 تاریخ انقضا: **{srv.expire_date or 'نامحدود'}**\n"
+        f"🔌 وضعیت فعلی: **{status_str}**\n\n"
+        f"🔗 لینک اتصال:\n`{sub_url}`"
+    )
+    
+    toggle_label = "🔴 غیرفعال کردن سرویس" if status_str == "active" else "🟢 فعال کردن سرویس"
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=toggle_label, callback_data=f"srv_toggle_{srv.id}")],
+        [InlineKeyboardButton(text="🔙 بازگشت به پنل مدیریت", callback_data="btn_admin_panel")]
+    ])
+    
+    await message.reply(txt, reply_markup=kb, parse_mode="Markdown")
+    await state.clear()
+
+@router.callback_query(F.data.startswith("usr_action_"))
+async def process_usr_interactive_actions(callback: CallbackQuery, state: FSMContext):
+    """Processes interactive action clicks from user profile management keyboard."""
+    parts = callback.data.split("_")
+    action = parts[2]
+    target_uid = int(parts[3])
+    
+    if callback.from_user.id not in config["ADMIN_IDS"]: return
+    
+    if action == "toggleban":
+        with SessionLocal() as db:
+            user = db.query(DBUser).filter(DBUser.telegram_id == target_uid).first()
+            if not user: return
+            user.is_banned = not user.is_banned
+            db.commit()
+            new_status = user.is_banned
+            
+        msg = f"🚫 کاربر با موفقیت مسدود شد." if new_status else "🟢 کاربر با موفقیت آزاد گردید."
+        await callback.answer(msg, show_alert=True)
+        
+        # Simulate lookup update
+        class DummyMsg:
+            def __init__(self, text, from_user, chat):
+                self.text = text
+                self.from_user = from_user
+                self.chat = chat
+            async def reply(self, text, reply_markup, parse_mode):
+                await callback.message.edit_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+                
+        dummy = DummyMsg(str(target_uid), callback.from_user, callback.message.chat)
+        await process_user_lookup(dummy, state)
+        
+    elif action == "charge":
+        await state.update_data(charge_target_id=target_uid)
+        await callback.message.edit_text(
+            "✏️ مبلغ مورد نظر جهت اعمال تراز را وارد کنید:\n"
+            "_(عدد مثبت مانند `50000` جهت افزایش و عدد منفی مانند `-20000` جهت کسر تراز)_",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 لغو", callback_data="btn_admin_panel")]
+            ]),
+            parse_mode="Markdown"
+        )
+        await state.set_state(AdminStates.waiting_for_charge_amount)
+        await callback.answer()
+        
+    elif action == "msg":
+        await state.update_data(direct_msg_target_id=target_uid)
+        await callback.message.edit_text(
+            "✉️ پیام مورد نظر خود را جهت ارسال مستقیم به کاربر بنویسید:\n"
+            "_(از قالب بندی استاندارد Markdown پشتیبانی می‌شود)_",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 لغو", callback_data="btn_admin_panel")]
+            ]),
+            parse_mode="Markdown"
+        )
+        await state.set_state(AdminStates.waiting_for_direct_message)
+        await callback.answer()
+
+@router.message(AdminStates.waiting_for_direct_message)
+async def process_direct_message_send(message: Message, state: FSMContext):
+    """Sends custom typed administrative message directly to user."""
+    state_data = await state.get_data()
+    target_uid = state_data["direct_msg_target_id"]
+    msg_text = message.text.strip()
+    
+    await state.clear()
+    
+    user_banner = (
+        "✉️ **پیام جدیدی از مدیریت دریافت شد:**\n\n"
+        f"{msg_text}"
+    )
+    
+    try:
+        await bot.send_message(chat_id=target_uid, text=user_banner, parse_mode="Markdown")
+        await message.reply(
+            f"✅ پیام مستقیم شما با موفقیت برای کاربر ({target_uid}) ارسال گردید.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 بازگشت به پنل مدیریت", callback_data="btn_admin_panel")]
+            ])
+        )
+    except Exception as e:
+        await message.reply(f"❌ خطا در ارسال پیام مستقیم: {e}")
+
+# ---------------------------------------------------------------------------
+# 11.4.2 Manual User Recharge Flow (Fallback wrapper logic matching database interface)
+# ---------------------------------------------------------------------------
+@router.callback_query(F.data == "adm_charge_user")
+async def adm_charge_user_callback(callback: CallbackQuery, state: FSMContext):
+    """Tolls lookup panel to safely configure balances."""
+    await adm_user_panel_search(callback, state)
 
 @router.message(AdminStates.waiting_for_charge_amount)
 async def adm_process_charge_amount(message: Message, state: FSMContext):
@@ -1295,53 +2012,152 @@ async def adm_process_charge_amount(message: Message, state: FSMContext):
         
     await state.clear()
 
+# ---------------------------------------------------------------------------
 # 11.5 Broadcast System
-@router.callback_query(F.data == "adm_broadcast")
-async def adm_broadcast_callback(callback: CallbackQuery, state: FSMContext):
-    """Sets FSM state to accept custom broad broadcast payload message."""
+# ---------------------------------------------------------------------------
+@router.callback_query(F.data == "adm_broadcast_mode_select")
+async def adm_broadcast_mode_select(callback: CallbackQuery, state: FSMContext):
+    """Offers choice between forward or raw copy mode for global communications."""
     if callback.from_user.id not in config["ADMIN_IDS"]: return
     
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📦 روش اول: کپی مستقیم (Copy)", callback_data="set_broad_copy")],
+        [InlineKeyboardButton(text="🔄 روش دوم: فوروارد مستقیم (Forward)", callback_data="set_broad_forward")],
+        [InlineKeyboardButton(text="🔙 لغو", callback_data="btn_admin_panel")]
+    ])
+    
     await callback.message.edit_text(
-        "📢 لطفاً پیام خود را جهت ارسال همگانی بنویسید (از فرمت استاندارد Markdown پشتیبانی می‌شود):",
+        "📢 **انتخاب شیوه ارسال پیام همگانی:**\n\n"
+        "▫️ **روش کپی:** متن یا فایل ارسالی شما مستقیماً با نام ربات فرستاده می‌شود.\n\n"
+        "▫️ **روش فوروارد:** پیام منتخب شما از کانال یا گروه فوروارد می‌شود. (برای نگهداشتن شکلک‌های ویژه، پیوست‌ها و قالب‌بندی‌های پریمیوم مناسب‌تر است)",
+        reply_markup=kb,
+        parse_mode="Markdown"
+    )
+    await state.set_state(AdminStates.waiting_for_broadcast_mode)
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("set_broad_"), AdminStates.waiting_for_broadcast_mode)
+async def process_broad_mode_set(callback: CallbackQuery, state: FSMContext):
+    """Saves selected transmission mechanism and prompts the message content."""
+    mode = "copy" if callback.data == "set_broad_copy" else "forward"
+    await state.update_data(broadcast_send_mode=mode)
+    
+    await callback.message.edit_text(
+        f"📥 لطفاً پیام خود را ارسال کنید (این پیام با روش **{mode.upper()}** برای تمام اعضا فرستاده خواهد شد):",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔙 لغو", callback_data="btn_admin_panel", style="danger")]
         ])
     )
-    await state.set_state(AdminStates.waiting_for_broadcast)
+    await state.set_state(AdminStates.waiting_for_broadcast_msg)
     await callback.answer()
 
-@router.message(AdminStates.waiting_for_broadcast)
-async def adm_process_broadcast(message: Message, state: FSMContext):
-    """Loops and sends the formatted broadcast message asynchronously with safety sleep."""
-    broadcast_text = message.text
-    await state.clear()
+@router.message(AdminStates.waiting_for_broadcast_msg)
+async def capture_broadcast_message(message: Message, state: FSMContext):
+    """Registers source parameters and requests ultimate deployment authorization."""
+    state_data = await state.get_data()
+    mode = state_data["broadcast_send_mode"]
     
     with SessionLocal() as db:
-        users = db.query(DBUser).all()
+        target_count = db.query(DBUser).filter(DBUser.is_active == True).count()
         
-    sent_msg = await message.reply("⏳ در حال ارسال پیام همگانی به کاربران...")
+    eta_seconds = int(target_count * 0.05)
     
+    await state.update_data(
+        src_msg_id=message.message_id,
+        src_chat_id=message.chat.id,
+        target_pool_count=target_count
+    )
+    
+    preview_txt = (
+        "⚠️ **تاییدیه نهایی ارسال پیام همگانی**\n\n"
+        f"▫️ تعداد گیرندگان فعال: **{target_count}** کاربر\n"
+        f"▫️ شیوه ارسال: **{mode.upper()}**\n"
+        f"▫️ زمان تقریبی فرآیند (ETA): ~**{eta_seconds}** ثانیه\n\n"
+        "آیا برای شروع ارسال همگانی اطمینان دارید؟"
+    )
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ تایید و ارسال عمومی", callback_data="adm_confirm_broadcast_go", style="success"),
+            InlineKeyboardButton(text="❌ انصراف", callback_data="btn_admin_panel", style="danger")
+        ]
+    ])
+    
+    await message.reply(preview_txt, reply_markup=kb, parse_mode="Markdown")
+    await state.set_state(AdminStates.waiting_for_broadcast_confirm)
+
+@router.callback_query(F.data == "adm_confirm_broadcast_go", AdminStates.waiting_for_broadcast_confirm)
+async def execute_global_broadcast(callback: CallbackQuery, state: FSMContext):
+    """Triggers global background sending sequence with rate limits and active filtering."""
+    state_data = await state.get_data()
+    mode = state_data["broadcast_send_mode"]
+    src_msg_id = state_data["src_msg_id"]
+    src_chat_id = state_data["src_chat_id"]
+    
+    await callback.message.edit_text("⏳ فرآیند ارسال پیام همگانی آغاز شد. گزارش نهایی به زودی ارسال می‌شود...")
+    
+    with SessionLocal() as db:
+        users = db.query(DBUser).filter(DBUser.is_active == True).all()
+        
     success_count = 0
     failed_count = 0
     
     for u in users:
         try:
-            await bot.send_message(chat_id=u.telegram_id, text=broadcast_text, parse_mode="Markdown")
+            if mode == "copy":
+                await bot.copy_message(
+                    chat_id=u.telegram_id,
+                    from_chat_id=src_chat_id,
+                    message_id=src_msg_id
+                )
+            else:
+                await bot.forward_message(
+                    chat_id=u.telegram_id,
+                    from_chat_id=src_chat_id,
+                    message_id=src_msg_id
+                )
             success_count += 1
             await asyncio.sleep(0.05)
-        except Exception:
+        except TelegramRetryAfter as e:
+            await asyncio.sleep(e.retry_after)
+            try:
+                if mode == "copy":
+                    await bot.copy_message(chat_id=u.telegram_id, from_chat_id=src_chat_id, message_id=src_msg_id)
+                else:
+                    await bot.forward_message(chat_id=u.telegram_id, from_chat_id=src_chat_id, message_id=src_msg_id)
+                success_count += 1
+            except Exception:
+                failed_count += 1
+        except (TelegramForbiddenError, TelegramBadRequest) as e:
             failed_count += 1
+            with SessionLocal() as db:
+                db_user = db.query(DBUser).filter(DBUser.telegram_id == u.telegram_id).first()
+                if db_user:
+                    db_user.is_active = False
+                    db.commit()
+            logger.info(f"User {u.telegram_id} marked inactive due to block/deletion.")
+        except Exception as e:
+            failed_count += 1
+            logger.error(f"Error broadcasting to {u.telegram_id}: {e}")
             
-    await sent_msg.edit_text(
-        f"📢 **گزارش ارسال پیام همگانی:**\n\n"
+    report_txt = (
+        "📢 **گزارش پایانی کمپین پیام همگانی**\n\n"
         f"✅ ارسال موفقیت‌آمیز: **{success_count}** کاربر\n"
-        f"❌ ناموفق / مسدود کرده: **{failed_count}** کاربر",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔙 بازگشت به پنل مدیریت", callback_data="btn_admin_panel")]
-        ])
+        f"❌ ناموفق / مسدود شده: **{failed_count}** کاربر\n\n"
+        "ℹ️ کاربرانی که ربات را مسدود یا اکانت خود را دیلیت کرده‌اند، برای کاهش بار پردازش در دفعات بعدی غیرفعال شدند."
     )
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 بازگشت به پنل مدیریت", callback_data="btn_admin_panel")]
+    ])
+    
+    await callback.message.reply(report_txt, reply_markup=kb, parse_mode="Markdown")
+    await state.clear()
+    await callback.answer()
 
+# ---------------------------------------------------------------------------
 # 11.6 Paginated User List View (2 Columns)
+# ---------------------------------------------------------------------------
 @router.callback_query(F.data.startswith("adm_view_users_"))
 async def adm_view_users_callback(callback: CallbackQuery):
     """Renders local user records using modular offset paging."""
@@ -1352,25 +2168,34 @@ async def adm_view_users_callback(callback: CallbackQuery):
     
     with SessionLocal() as db:
         total_users = db.query(DBUser).count()
-        txt = "👥 **لیست کاربران دیتابیس (صفحه‌بندی شده):**\n\n"
-        for u in users:
-            txt += f"👤 [{u.first_name or 'Unkown'}](tg://user?id={u.telegram_id}) (`{u.telegram_id}`)\n"
-            txt += f"▫️ تراز حساب: **{int(u.balance):,}** تومان\n"
-            txt += f"▫️ پیوستن: {u.joined_at.strftime('%Y-%m-%d %H:%M')}\n\n"
-            
-        kb_nav = []
-        if page > 0:
-            kb_nav.append(InlineKeyboardButton(text="⬅️ قبلی", callback_data=f"adm_view_users_{page - 1}"))
-        if offset + limit < total_users:
-            kb_nav.append(InlineKeyboardButton(text="بعدی ➡️", callback_data=f"adm_view_users_{page + 1}"))
-            
-        kb = [kb_nav] if kb_nav else []
-        kb.append([InlineKeyboardButton(text="🔙 بازگشت به پنل مدیریت", callback_data="btn_admin_panel")])
+        users = db.query(DBUser).order_by(desc(DBUser.id)).offset(offset).limit(limit).all()
         
-        await callback.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
-        await callback.answer()
+    txt = "👥 **لیست کاربران دیتابیس (صفحه‌بندی شده):**\n\n"
+    for u in users:
+        with SessionLocal() as db:
+            rank, _ = calculate_user_rank(db, u.id)
+        status_symbol = "🟢" if u.is_active else "🔴"
+        ban_text = " [ مسدود شده ]" if u.is_banned else ""
+        txt += f"👤 {status_symbol} [{u.first_name or 'Unknown'}](tg://user?id={u.telegram_id}) (`{u.telegram_id}`){ban_text}\n"
+        txt += f"▫️ رتبه: **{rank}**\n"
+        txt += f"▫️ تراز حساب: **{int(u.balance):,}** تومان\n"
+        txt += f"▫️ پیوستن: {u.joined_at.strftime('%Y-%m-%d %H:%M')}\n\n"
+            
+    kb_nav = []
+    if page > 0:
+        kb_nav.append(InlineKeyboardButton(text="⬅️ قبلی", callback_data=f"adm_view_users_{page - 1}"))
+    if offset + limit < total_users:
+        kb_nav.append(InlineKeyboardButton(text="بعدی ➡️", callback_data=f"adm_view_users_{page + 1}"))
+        
+    kb = [kb_nav] if kb_nav else []
+    kb.append([InlineKeyboardButton(text="🔙 بازگشت به پنل مدیریت", callback_data="btn_admin_panel")])
+    
+    await callback.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
+    await callback.answer()
 
+# ---------------------------------------------------------------------------
 # 11.7 Paginated Services List View (2 Columns)
+# ---------------------------------------------------------------------------
 @router.callback_query(F.data.startswith("adm_view_services_"))
 async def adm_view_services_callback(callback: CallbackQuery):
     """Renders modular list of localized service registrations with offsets."""
@@ -1402,7 +2227,9 @@ async def adm_view_services_callback(callback: CallbackQuery):
     await callback.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
     await callback.answer()
 
+# ---------------------------------------------------------------------------
 # 11.8 Paginated Transactions List View (2 Columns)
+# ---------------------------------------------------------------------------
 @router.callback_query(F.data.startswith("adm_view_txs_"))
 async def adm_view_txs_callback(callback: CallbackQuery):
     """Loads and lists financial transaction ledgers with incremental pages."""
@@ -1436,7 +2263,9 @@ async def adm_view_txs_callback(callback: CallbackQuery):
     await callback.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
     await callback.answer()
 
+# ---------------------------------------------------------------------------
 # 11.9 Pending Receipt Verification View
+# ---------------------------------------------------------------------------
 @router.callback_query(F.data == "btn_admin_review_pending")
 async def admin_review_pending_callback(callback: CallbackQuery):
     """Loads first active pending receipt photo and attaches verification inline."""
@@ -1457,14 +2286,25 @@ async def admin_review_pending_callback(callback: CallbackQuery):
         [InlineKeyboardButton(text="🔙 بازگشت به پنل مدیریت", callback_data="btn_admin_panel")]
     ])
     
-    await bot.send_photo(
-        chat_id=callback.from_user.id,
-        photo=tx.receipt_image_id,
-        caption=f"👤 کاربر: {user.first_name or ''} ({user.telegram_id})\n💵 مبلغ درخواستی: **{tx.amount:,}** تومان\n\nآیا این رسید معتبر است؟",
-        reply_markup=kb,
-        parse_mode="Markdown"
-    )
-    await callback.message.delete()
+    if tx.receipt_image_id:
+        await bot.send_photo(
+            chat_id=callback.from_user.id,
+            photo=tx.receipt_image_id,
+            caption=f"👤 کاربر: {user.first_name or ''} ({user.telegram_id})\n💵 مبلغ درخواستی: **{tx.amount:,}** تومان\n\nآیا این رسید معتبر است؟",
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
+        await callback.message.delete()
+    else:
+        await callback.message.edit_text(
+            f"👤 کاربر: {user.first_name or ''} ({user.telegram_id})\n"
+            f"💵 مبلغ: **{tx.amount:,}** تومان\n"
+            f"ℹ️ توضیحات: {tx.description or 'ندارد'}\n"
+            f"🔑 هش تراکنش: `{tx.tx_hash or 'ندارد'}`\n\n"
+            "آیا مایل به تایید این واریزی بدون فیش تصویری هستید؟",
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
     await callback.answer()
 
 @router.callback_query(F.data.startswith("tx_"))
@@ -1497,12 +2337,15 @@ async def admin_decision_callback(callback: CallbackQuery):
             except Exception:
                 pass
             
-            await callback.message.edit_caption(caption=f"✅ رسید به مبلغ {int(tx.amount):,} تومان توسط ادمین **تایید** شد.")
+            try:
+                await callback.message.edit_caption(caption=f"✅ رسید به مبلغ {int(tx.amount):,} تومان توسط ادمین **تایید** شد.")
+            except Exception:
+                await callback.message.edit_text(text=f"✅ رسید به مبلغ {int(tx.amount):,} تومان توسط ادمین **تایید** شد.")
 
             for admin_id in config["ADMIN_IDS"]:
                 if admin_id != callback.from_user.id:
                     try:
-                        await bot.send_message(chat_id=admin_id, text=f"💰 Card Top-up Approved: User {user.telegram_id} got +{tx.amount:,} Tomans.")
+                        await bot.send_message(chat_id=admin_id, text=f"💰 افزایش تراز تایید شده: کاربر {user.telegram_id} مبلغ {tx.amount:,} تومان دریافت کرد.")
                     except Exception: pass
         else:
             tx.status = "rejected"
@@ -1517,7 +2360,10 @@ async def admin_decision_callback(callback: CallbackQuery):
             except Exception:
                 pass
                 
-            await callback.message.edit_caption(caption=f"❌ رسید به مبلغ {int(tx.amount):,} تومان توسط ادمین **رد** شد.")
+            try:
+                await callback.message.edit_caption(caption=f"❌ رسید به مبلغ {int(tx.amount):,} تومان توسط ادمین **رد** شد.")
+            except Exception:
+                await callback.message.edit_text(text=f"❌ رسید به مبلغ {int(tx.amount):,} تومان توسط ادمین **رد** شد.")
 
 # ---------------------------------------------------------------------------
 # 12. Automated Scheduled Tasks (Backups)
@@ -1541,7 +2387,7 @@ async def backup_scheduler():
                         await bot.send_document(
                             chat_id=admin_id,
                             document=backup_file,
-                            caption=f"📂 **Automatic Reseller Bot Database Backup**\n📅 Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                            caption=f"📂 **پشتیبان‌گیری خودکار پایگاه داده**\n📅 تاریخ ارسال: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
                         )
                     except Exception as e:
                         print(f"[Backup System] Error sending backup to admin {admin_id}: {e}")
