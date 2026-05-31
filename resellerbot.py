@@ -4,8 +4,12 @@ import sys
 import subprocess
 import json
 import re
-import urllib.parse
+import asyncio
+import requests
+import getpass
+import logging
 from datetime import datetime
+from logging.handlers import RotatingFileHandler
 
 def setup_environment_and_install_dependencies():
     """Checks and automates the creation of virtual environment and dependencies."""
@@ -36,11 +40,11 @@ def setup_environment_and_install_dependencies():
         print("\nSetup completed. Relaunching script inside the virtual environment...")
         os.execv(venv_python, [venv_python] + sys.argv)
 
+# Trigger environmental setups
 setup_environment_and_install_dependencies()
 
-import logging
-from logging.handlers import RotatingFileHandler
-from aiogram import Bot, Dispatcher, Router, F
+# Third-Party Library Imports
+from aiogram import Bot, Dispatcher, Router, F, BaseMiddleware
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile, FSInputFile
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.state import State, StatesGroup
@@ -51,11 +55,12 @@ from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from colorama import init, Fore, Style
 from rich.console import Console
 from rich.panel import Panel
-import getpass
 
+# Initialize Colorama and Rich Console
 init(autoreset=True)
 console = Console()
 
+# Configure Rotating Logs
 log_handler = RotatingFileHandler("reseller_bot.log", maxBytes=10*1024*1024, backupCount=5, encoding="utf-8")
 logging.basicConfig(
     level=logging.INFO,
@@ -153,6 +158,19 @@ def load_or_create_config():
         if backup_interval_input.isdigit():
             backup_interval = int(backup_interval_input)
 
+    force_join_id = input(f"{Fore.CYAN}9. Enter Force Join Channel Chat ID (e.g. -100123456789) [optional]: {Style.RESET_ALL}").strip()
+    force_join_chat_id = int(force_join_id) if (force_join_id and force_join_id.replace('-', '').isdigit()) else None
+    
+    force_join_link = ""
+    if force_join_chat_id:
+        force_join_link = input(f"{Fore.CYAN}10. Enter Force Join Channel Invite Link: {Style.RESET_ALL}").strip()
+        
+    support_username = input(f"{Fore.CYAN}11. Enter Support Username [default: @rnilaad]: {Style.RESET_ALL}").strip()
+    if not support_username:
+        support_username = "@rnilaad"
+    elif not support_username.startswith("@"):
+        support_username = "@" + support_username
+
     config_data = {
         "BOT_TOKEN": bot_token,
         "ADMIN_IDS": admin_ids,
@@ -161,7 +179,10 @@ def load_or_create_config():
         "CARD_NUMBER": card_number or "6037997900000000",
         "CARD_HOLDER": card_holder or "Administrator",
         "BACKUP_ENABLED": backup_enabled,
-        "BACKUP_INTERVAL_HOURS": backup_interval
+        "BACKUP_INTERVAL_HOURS": backup_interval,
+        "FORCE_JOIN_CHAT_ID": force_join_chat_id,
+        "FORCE_JOIN_LINK": force_join_link,
+        "SUPPORT_USERNAME": support_username
     }
 
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
@@ -169,7 +190,7 @@ def load_or_create_config():
     
     console.print("[green]✔ Configuration written successfully.[/green]")
 
-    service_choice = input(f"{Fore.CYAN}9. Would you like to create a systemctl service unit? (y/n): {Style.RESET_ALL}").strip().lower()
+    service_choice = input(f"{Fore.CYAN}12. Would you like to create a systemctl service unit? (y/n): {Style.RESET_ALL}").strip().lower()
     if service_choice == 'y' or service_choice == 'yes':
         if os.name == "nt":
             venv_python = os.path.join(os.getcwd(), ".venv", "Scripts", "python.exe")
@@ -337,7 +358,49 @@ class AdminStates(StatesGroup):
     waiting_for_charge_amount = State()
 
 # ---------------------------------------------------------------------------
-# 5. Keyboards with New Telegram 10.0 Styles (Primary, Success, Danger)
+# 5. Force Join Channel Verification Middleware
+# ---------------------------------------------------------------------------
+class ForceJoinMiddleware(BaseMiddleware):
+    """Intercepts and verifies channel subscription status before proceeding."""
+    async def __call__(self, handler, event, data):
+        user = data.get("event_from_user")
+        if not user:
+            return await handler(event, data)
+        
+        # Admins are exempt from joining constraints
+        if user.id in config["ADMIN_IDS"]:
+            return await handler(event, data)
+            
+        chat_id = config.get("FORCE_JOIN_CHAT_ID")
+        link = config.get("FORCE_JOIN_LINK", "https://t.me/your_channel")
+        
+        if chat_id:
+            try:
+                member = await bot.get_chat_member(chat_id=chat_id, user_id=user.id)
+                if member.status not in ["creator", "administrator", "member"]:
+                    raise Exception("Not subscribed")
+            except Exception:
+                kb = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="📢 عضویت در کانال ما (Join Channel)", url=link)],
+                    [InlineKeyboardButton(text="🔄 تایید عضویت (Check Subscription)", callback_data="btn_main_menu")]
+                ])
+                msg_text = (
+                    "⚠️ **جهت استفاده از خدمات ربات، ابتدا باید عضو کانال ما شوید:**\n\n"
+                    "لطفاً با دکمه زیر وارد کانال شده و دکمه تایید را فشار دهید."
+                )
+                if isinstance(event, Message):
+                    await event.reply(msg_text, reply_markup=kb, parse_mode="Markdown")
+                elif isinstance(event, CallbackQuery):
+                    await event.message.edit_text(msg_text, reply_markup=kb, parse_mode="Markdown")
+                    await event.answer()
+                return
+        return await handler(event, data)
+
+dp.message.outer_middleware(ForceJoinMiddleware())
+dp.callback_query.outer_middleware(ForceJoinMiddleware())
+
+# ---------------------------------------------------------------------------
+# 6. Keyboards with New Telegram 10.0 Styles (Primary, Success, Danger)
 # ---------------------------------------------------------------------------
 def main_menu_keyboard(tg_id):
     """Builds primary navigation interface featuring Telegram 10.0 button colors."""
@@ -358,7 +421,7 @@ def back_to_menu_keyboard():
     ])
 
 # ---------------------------------------------------------------------------
-# 6. Basic User Messages & Handlers (Persian interface for users)
+# 7. Basic User Messages & Handlers (Persian interface for users)
 # ---------------------------------------------------------------------------
 @router.message(CommandStart())
 async def start_handler(message: Message, state: FSMContext):
@@ -389,19 +452,20 @@ async def main_menu_callback(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "btn_support")
 async def support_callback(callback: CallbackQuery):
     """Displays localized customer service and support details."""
+    support_user = config.get("SUPPORT_USERNAME", "@rnilaad").replace("@", "")
     support_txt = (
         "📞 **ارتباط با پشتیبانی**\n\n"
         "در صورت بروز هرگونه مشکل یا داشتن سوال درباره خرید و فعال‌سازی سرویس‌ها، با آیدی پشتیبانی در ارتباط باشید."
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💬 ارسال پیام به پشتیبانی", url="https://t.me/frewgdscew")],
+        [InlineKeyboardButton(text="💬 ارسال پیام به پشتیبانی", url=f"https://t.me/{support_user}")],
         [InlineKeyboardButton(text="🔙 بازگشت", callback_data="btn_main_menu")]
     ])
     await callback.message.edit_text(support_txt, reply_markup=kb, parse_mode="Markdown")
     await callback.answer()
 
 # ---------------------------------------------------------------------------
-# 7. Financial & Deposit Processing
+# 8. Financial & Deposit Processing
 # ---------------------------------------------------------------------------
 @router.callback_query(F.data == "btn_wallet")
 async def wallet_callback(callback: CallbackQuery):
@@ -497,11 +561,11 @@ async def process_receipt_photo(message: Message, state: FSMContext):
             logger.error(f"Error notifying admin {admin_id}: {e}")
 
 # ---------------------------------------------------------------------------
-# 8. Purchase Flow with Premium Styles
+# 9. Purchase Flow with Premium Styles
 # ---------------------------------------------------------------------------
 @router.callback_query(F.data == "btn_buy_service")
 async def buy_service_callback(callback: CallbackQuery, state: FSMContext):
-    """Fetches plans and structures dynamic buy option inline keyboard."""
+    """Creates plan selection and schedules standard margin configuration."""
     await state.clear()
     await callback.message.edit_text("⏳ در حال دریافت لیست پلن‌ها از سرور...")
     
@@ -628,7 +692,7 @@ async def confirm_buy_final_callback(callback: CallbackQuery, state: FSMContext)
             success_txt = (
                 "🎉 **خرید شما با موفقیت انجام شد!**\n\n"
                 f"🔗 **لینک اشتراک اختصاصی:**\n`{sub_link}`\n\n"
-                "کانفیگ‌های شما صادر شد. می‌توانید از دکمه زیر برای باز کردن مستقیم پنل خود استفاده کنید:"
+                "جهت باز کردن پنل کاربری یا کپی خودکار از کلیدهای تعبیه شده در زیر استفاده فرمایید:"
             )
             
             kb_list = [
@@ -1135,7 +1199,7 @@ async def adm_view_txs_callback(callback: CallbackQuery):
     txt = "💰 **گزارش تراکنش‌های مالی اخیر:**\n\n"
     for t in transactions:
         sign = "+" if t.amount > 0 else ""
-        txt += f"🧾 تراکنش: **{t.type}** (ID: {t.id})\n"
+        txt += f"🔋 تراکنش: **{t.type}** (ID: {t.id})\n"
         txt += f"▫️ مبلغ: **{sign}{int(t.amount):,}** تومان\n"
         txt += f"▫️ وضعیت تراکنش: **{t.status}**\n"
         txt += f"▫️ شرح: {t.description or '-'}\n"
@@ -1209,7 +1273,7 @@ async def admin_decision_callback(callback: CallbackQuery):
             try:
                 await bot.send_message(
                     chat_id=user.telegram_id,
-                    text=f"✅ **واریز کارت به کارت شما تایید شد!**\n\nمبلغ **{int(tx.amount):,}** تومان به کیف پول شما افزوده شد.\nموجودی فعلی شما: **{int(user.balance):,}** تومان"
+                    text=f"✅ **...واریز کارت به کارت شما تایید شد!**\n\nمبلغ **{int(tx.amount):,}** تومان به کیف پول شما افزوده شد.\nموجودی فعلی شما: **{int(user.balance):,}** تومان"
                 )
             except Exception:
                 pass
