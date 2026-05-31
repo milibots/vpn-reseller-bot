@@ -8,19 +8,9 @@ To automatically install the bot, configure the settings, set up the database, a
 
 ```bash
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/milibots/vpn-reseller-bot/main/install.sh)"
-🗑️ Fast One-Click Uninstallation
-If you wish to completely remove the bot, stop and delete its background service, and wipe the database and installation directory, execute:
-code
-Bash
+```
+## 🗑️ Fast One-Click Uninstallation
+
+```bash
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/milibots/vpn-reseller-bot/main/uninstall.sh)"
-🛠 Manual Installation
-If you prefer to install the prerequisites manually:
-Clone the repository:
-code
-Bash
-git clone https://github.com/milibots/vpn-reseller-bot.git
-cd vpn-reseller-bot
-Run the application (it will automatically build the virtual environment and install missing libraries):
-code
-Bash
-python3 resellerbot.py
+```
