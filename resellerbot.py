@@ -1801,8 +1801,8 @@ async def adm_central_bal_callback(callback: CallbackQuery):
                 f"موجودی فعلی حساب شما در پنل اصلی: **{int(bal):,}** تومان\n\n"
                 "تراکنش‌های خرید مستقیم از این اعتبار کسر می‌شود."
             )
-        else:
-            txt = "❌ دریافت اطلاعات موجودی وب‌سرویس اصلی با خطا مواجه شد."
+    else:
+        txt = "❌ دریافت اطلاعات موجودی وب‌سرویس اصلی با خطا مواجه شد."
             
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔙 بازگشت به پنل مدیریت", callback_data="btn_admin_panel")]
