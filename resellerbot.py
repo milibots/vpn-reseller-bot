@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import os
 import sys
 import subprocess
@@ -88,17 +89,31 @@ logger = logging.getLogger("reseller_bot")
 CONFIG_PATH = "reseller_config.json"
 TEXTS_PATH = "reseller_texts.json"
 
+# MarkdownV2 escaping and formatting helper functions
+def escape_md(text: str) -> str:
+    """Escapes special characters for Telegram MarkdownV2 outside pre/code/link-url."""
+    if not text:
+        return ""
+    escape_chars = r"_*[]()~`>#+-=|{}.!"
+    return re.sub(f"([{re.escape(escape_chars)}])", r"\\\1", str(text))
+
+def escape_md_code(text: str) -> str:
+    """Escapes required characters inside pre and code entities for MarkdownV2."""
+    if not text:
+        return ""
+    return str(text).replace("\\", "\\\\").replace("`", "\\`")
+
 DEFAULT_TEXTS = {
-    "welcome_text": "🌟 سلام <b>{first_name}</b> عزیز، به ربات هوشمند {bot_first_name} خوش آمدید.\n\n📊 رتبه کاربری شما: <b>{rank_name}</b>\nموجودی فعلی شما: <b>{balance}</b> تومان\n\nلطفاً جهت خرید یا مدیریت اشتراک‌های خود از دکمه‌های زیر استفاده کنید.",
-    "main_menu_text": "🌟 منوی اصلی سیستم\n\n📊 سطح کاربری شما: <b>{rank_name}</b>\nموجودی کیف پول شما: <b>{balance}</b> تومان",
-    "support_text": "📞 <b>ارتباط با پشتیبانی</b>\n\nدر صورت بروز هرگونه مشکل یا داشتن سوال درباره خرید و فعال‌سازی سرویس‌ها، با آیدی پشتیبانی در ارتباط باشید.",
-    "wallet_text": "💳 <b>کیف پول حساب کاربری</b>\n\nموجودی فعلی شما: <b>{balance}</b> تومان\n\nجهت شارژ حساب خود می‌توانید از دکمه زیر اقدام نمایید.",
-    "card_payment_instructions": "🧾 <b>درخواست واریز کارت به کارت</b>\n\n💵 مبلغ قابل پرداخت: <b>{amount}</b> تومان\n\n💳 شماره کارت جهت واریز:\n<code>{card_number}</code>\n\n👤 به نام:\n<b>{card_holder}</b>\n\n⚠️ لطفاً پس از انتقال وجه، تصویر فیش یا رسید واریزی خود را در همین بخش ارسال کنید.",
-    "crypto_payment_instructions": "💎 <b>پرداخت با رمزارز {asset}</b>\n\n📍 لطفاً مبلغ مورد نظر خود را به آدرس زیر واریز نمایید:\n\n<code>{address}</code>\n\n⚠️ توجه: پس از تکمیل انتقال، لطفا کد پیگیری (TXID / Hash) یا عکس رسید پرداخت خود را در همین بخش ارسال نمایید.",
-    "maintenance_text": "🔧 <b>ربات در حال حاضر در وضعیت بروزرسانی قرار دارد</b>\n\nدر این لحظه امکان ارائه خدمات وجود ندارد. لطفاً بعداً تلاش کنید یا با پشتیبانی در ارتباط باشید.",
-    "shop_closed_text": "⚠️ <b>فروشگاه موقتاً تعطیل است</b>\n\nامکان ثبت سفارش جدید در حال حاضر وجود ندارد. از صبر و شکیبایی شما سپاسگزاریم.",
-    "purchase_success_text": "🎉 <b>خرید شما با موفقیت انجام شد!</b>\n\n🔗 <b>لینک اشتراک اختصاصی:</b>\n<code>{sub_link}</code>\n\n",
-    "insufficient_balance_text": "❌ <b>موجودی حساب شما کافی نیست!</b>\n\nقیمت پلن: <b>{price}</b> تومان\nموجودی شما: <b>{balance}</b> تومان\n\nلطفاً ابتدا حساب خود را شارژ کنید."
+    "welcome_text": "🌟 سلام *{first_name}* عزیز، به ربات هوشمند {bot_first_name} خوش آمدید\\.\n\n📊 رتبه کاربری شما: *{rank_name}*\nموجودی فعلی شما: *{balance}* تومان\n\nلطفاً جهت خرید یا مدیریت اشتراک‌های خود از دکمه‌های زیر استفاده کنید\\.",
+    "main_menu_text": "🌟 منوی اصلی سیستم\n\n📊 سطح کاربری شما: *{rank_name}*\nموجودی کیف پول شما: *{balance}* تومان",
+    "support_text": "📞 *ارتباط با پشتیبانی*\n\nدر صورت بروز هرگونه مشکل یا داشتن سوال درباره خرید و فعال‌سازی سرویس‌ها، با آیدی پشتیبانی در ارتباط باشید\\.",
+    "wallet_text": "💳 *کیف پول حساب کاربری*\n\nموجودی فعلی شما: *{balance}* تومان\n\nجهت شارژ حساب خود می‌توانید از دکمه زیر اقدام نمایید\\.",
+    "card_payment_instructions": "🧾 *درخواست واریز کارت به کارت*\n\n💵 مبلغ قابل پرداخت: *{amount}* تومان\n\n💳 شماره کارت جهت واریز:\n`{card_number}`\n\n👤 به نام:\n*{card_holder}*\n\n⚠️ لطفاً پس از انتقال وجه، تصویر فیش یا رسید واریزی خود را در همین بخش ارسال کنید\\.",
+    "crypto_payment_instructions": "💎 *پرداخت با رمزارز {asset}*\n\n📍 لطفاً مبلغ مورد نظر خود را به آدرس زیر واریز نمایید:\n\n`{address}`\n\n⚠️ توجه: پس از تکمیل انتقال، لطفا کد پیگیری \\(TXID / Hash\\) یا عکس رسید پرداخت خود را در همین بخش ارسال نمایید\\.",
+    "maintenance_text": "🔧 *ربات در حال حاضر در وضعیت بروزرسانی قرار دارد*\n\nدر این لحظه امکان ارائه خدمات وجود ندارد\\. لطفاً بعداً تلاش کنید یا با پشتیبانی در ارتباط باشید\\.",
+    "shop_closed_text": "⚠️ *فروشگاه موقتاً تعطیل است*\n\nامکان ثبت سفارش جدید در حال حاضر وجود ندارد\\. از صبر و شکیبایی شما سپاسگزاریم\\.",
+    "purchase_success_text": "🎉 *خرید شما با موفقیت انجام شد\\!*\n\n🔗 *لینک اشتراک اختصاصی:*\n`{sub_link}`\n\n",
+    "insufficient_balance_text": "❌ *موجودی حساب شما کافی نیست\\!*\n\nقیمت پلن: *{price}* تومان\nموجودی شما: *{balance}* تومان\n\nلطفاً ابتدا حساب خود را شارژ کنید\\."
 }
 
 def load_or_create_texts():
@@ -389,23 +404,23 @@ def calculate_user_rank(session, user_id):
 # ---------------------------------------------------------------------------
 # Telegram Entity Parsing Protectors (Failsafe wrappers)
 # ---------------------------------------------------------------------------
-async def safe_reply(message: Message, text: str, reply_markup=None, parse_mode="HTML"):
+async def safe_reply(message: Message, text: str, reply_markup=None, parse_mode="MarkdownV2"):
     """Sends reply, gracefully falling back to raw unformatted text on dynamic parse exceptions."""
     try:
         return await message.reply(text, reply_markup=reply_markup, parse_mode=parse_mode)
     except TelegramBadRequest as e:
         if "can't parse entities" in str(e).lower():
-            logger.warning("Failsafe activated: HTML parse failed, sending plain raw message.")
+            logger.warning("Failsafe activated: MarkdownV2 parse failed, sending plain raw message.")
             return await message.reply(text, reply_markup=reply_markup, parse_mode=None)
         raise e
 
-async def safe_edit(message: Message, text: str, reply_markup=None, parse_mode="HTML"):
+async def safe_edit(message: Message, text: str, reply_markup=None, parse_mode="MarkdownV2"):
     """Edits message text, gracefully falling back to raw unformatted text on dynamic parse exceptions."""
     try:
         return await message.edit_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
     except TelegramBadRequest as e:
         if "can't parse entities" in str(e).lower():
-            logger.warning("Failsafe activated: HTML parse failed, sending plain raw message.")
+            logger.warning("Failsafe activated: MarkdownV2 parse failed, sending plain raw message.")
             return await message.edit_text(text, reply_markup=reply_markup, parse_mode=None)
         raise e
 
@@ -547,20 +562,20 @@ class CustomSecurityMiddleware(BaseMiddleware):
         if config.get("MAINTENANCE_MODE") and not is_admin:
             maint_txt = bot_texts.get("maintenance_text", DEFAULT_TEXTS["maintenance_text"])
             if isinstance(event, Message):
-                await event.reply(maint_txt, parse_mode="HTML")
+                await event.reply(maint_txt, parse_mode="MarkdownV2")
             elif isinstance(event, CallbackQuery):
-                await event.answer("⚠️ ربات موقتاً به دلیل بروزرسانی از دسترس خارج است.", show_alert=True)
+                await event.answer("⚠️ ربات موقتاً به دلیل بروزرسانی از دسترس خارج است\\.", show_alert=True)
             return
 
         # 2. Check Ban Status
         with SessionLocal() as db:
             db_user = db.query(DBUser).filter(DBUser.telegram_id == user.id).first()
             if db_user and db_user.is_banned:
-                ban_txt = "❌ **دسترسی شما به ربات مسدود شده است.**\n\nدر صورت وجود سوال یا مشکل با پشتیبانی در ارتباط باشید."
+                ban_txt = "❌ *دسترسی شما به ربات مسدود شده است\\.*\n\nدر صورت وجود سوال یا مشکل با پشتیبانی در ارتباط باشید\\."
                 if isinstance(event, Message):
-                    await event.reply(ban_txt, parse_mode="HTML")
+                    await event.reply(ban_txt, parse_mode="MarkdownV2")
                 elif isinstance(event, CallbackQuery):
-                    await event.answer("❌ حساب شما مسدود شده است.", show_alert=True)
+                    await event.answer("❌ حساب شما مسدود شده است\\.", show_alert=True)
                 return
 
         if is_admin:
@@ -581,13 +596,13 @@ class CustomSecurityMiddleware(BaseMiddleware):
                     [InlineKeyboardButton(text="🔄 تایید عضویت (Check Subscription)", callback_data="btn_main_menu")]
                 ])
                 msg_text = (
-                    "⚠️ **جهت استفاده از خدمات ربات، ابتدا باید عضو کانال ما شوید:**\n\n"
-                    "لطفاً با دکمه زیر وارد کانال شده و دکمه تایید را فشار دهید."
+                    "⚠️ *جهت استفاده از خدمات ربات، ابتدا باید عضو کانال ما شوید:*\n\n"
+                    "لطفاً با دکمه زیر وارد کانال شده و دکمه تایید را فشار دهید\\."
                 )
                 if isinstance(event, Message):
-                    await event.reply(msg_text, reply_markup=kb, parse_mode="HTML")
+                    await event.reply(msg_text, reply_markup=kb, parse_mode="MarkdownV2")
                 elif isinstance(event, CallbackQuery):
-                    await event.message.edit_text(msg_text, reply_markup=kb, parse_mode="HTML")
+                    await event.message.edit_text(msg_text, reply_markup=kb, parse_mode="MarkdownV2")
                     await event.answer()
                 return
         return await handler(event, data)
@@ -629,11 +644,11 @@ async def start_handler(message: Message, state: FSMContext):
         rank_name, _ = calculate_user_rank(db, user.id)
         raw_welcome_txt = bot_texts.get("welcome_text", DEFAULT_TEXTS["welcome_text"])
         welcome_txt = raw_welcome_txt.format(
-            first_name=html.escape(user.first_name or ''),
-            rank_name=rank_name,
-            balance=f"{int(user.balance):,}",
-            bot_first_name=html.escape(bot_info.first_name),
-            bot_username=html.escape(bot_info.username)
+            first_name=escape_md(user.first_name or ''),
+            rank_name=escape_md(rank_name),
+            balance=escape_md(f"{int(user.balance):,}"),
+            bot_first_name=escape_md(bot_info.first_name),
+            bot_username=escape_md(bot_info.username)
         )
         
         banner_url = config.get("WELCOME_BANNER_URL")
@@ -643,13 +658,13 @@ async def start_handler(message: Message, state: FSMContext):
                     photo=banner_url,
                     caption=welcome_txt,
                     reply_markup=main_menu_keyboard(message.from_user.id),
-                    parse_mode="HTML"
+                    parse_mode="MarkdownV2"
                 )
                 return
             except Exception as e:
                 logger.error(f"Error sending welcome banner photo: {e}")
 
-        await safe_reply(message, welcome_txt, reply_markup=main_menu_keyboard(message.from_user.id), parse_mode="HTML")
+        await safe_reply(message, welcome_txt, reply_markup=main_menu_keyboard(message.from_user.id), parse_mode="MarkdownV2")
 
 @router.callback_query(F.data == "btn_main_menu")
 async def main_menu_callback(callback: CallbackQuery, state: FSMContext):
@@ -661,10 +676,10 @@ async def main_menu_callback(callback: CallbackQuery, state: FSMContext):
         rank_name, _ = calculate_user_rank(db, user.id)
         raw_menu_txt = bot_texts.get("main_menu_text", DEFAULT_TEXTS["main_menu_text"])
         welcome_txt = raw_menu_txt.format(
-            rank_name=rank_name,
-            balance=f"{int(user.balance):,}",
-            bot_first_name=html.escape(bot_info.first_name),
-            bot_username=html.escape(bot_info.username)
+            rank_name=escape_md(rank_name),
+            balance=escape_md(f"{int(user.balance):,}"),
+            bot_first_name=escape_md(bot_info.first_name),
+            bot_username=escape_md(bot_info.username)
         )
         
         banner_url = config.get("WELCOME_BANNER_URL")
@@ -678,7 +693,7 @@ async def main_menu_callback(callback: CallbackQuery, state: FSMContext):
                     photo=banner_url,
                     caption=welcome_txt,
                     reply_markup=main_menu_keyboard(callback.from_user.id),
-                    parse_mode="HTML"
+                    parse_mode="MarkdownV2"
                 )
                 await callback.answer()
                 return
@@ -686,7 +701,7 @@ async def main_menu_callback(callback: CallbackQuery, state: FSMContext):
                 logger.error(f"Error showing welcome banner photo in menu callback: {e}")
 
         try:
-            await safe_edit(callback.message, welcome_txt, reply_markup=main_menu_keyboard(callback.from_user.id), parse_mode="HTML")
+            await safe_edit(callback.message, welcome_txt, reply_markup=main_menu_keyboard(callback.from_user.id), parse_mode="MarkdownV2")
         except Exception:
             await callback.message.answer(welcome_txt, reply_markup=main_menu_keyboard(callback.from_user.id))
         await callback.answer()
@@ -700,7 +715,7 @@ async def support_callback(callback: CallbackQuery):
         [InlineKeyboardButton(text="💬 ارسال پیام به پشتیبانی", url=f"https://t.me/{support_user}")],
         [InlineKeyboardButton(text="🔙 بازگشت", callback_data="btn_main_menu")]
     ])
-    await safe_edit(callback.message, support_txt, reply_markup=kb, parse_mode="HTML")
+    await safe_edit(callback.message, support_txt, reply_markup=kb, parse_mode="MarkdownV2")
     await callback.answer()
 
 # ---------------------------------------------------------------------------
@@ -712,21 +727,22 @@ async def wallet_callback(callback: CallbackQuery):
     with SessionLocal() as db:
         user = get_or_create_db_user(db, callback.from_user)
         raw_wallet_txt = bot_texts.get("wallet_text", DEFAULT_TEXTS["wallet_text"])
-        txt = raw_wallet_txt.format(balance=f"{int(user.balance):,}")
+        txt = raw_wallet_txt.format(balance=escape_md(f"{int(user.balance):,}"))
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🏧 افزایش موجودی (کارت به کارت)", callback_data="btn_charge_wallet", style="success")],
             [InlineKeyboardButton(text="💎 شارژ با ارز دیجیتال (Crypto)", callback_data="btn_charge_crypto", style="success")],
             [InlineKeyboardButton(text="🔙 بازگشت", callback_data="btn_main_menu")]
         ])
-        await safe_edit(callback.message, txt, reply_markup=kb, parse_mode="HTML")
+        await safe_edit(callback.message, txt, reply_markup=kb, parse_mode="MarkdownV2")
         await callback.answer()
 
 @router.callback_query(F.data == "btn_charge_wallet")
 async def charge_wallet_callback(callback: CallbackQuery, state: FSMContext):
     """Prompts client for custom checkout amount via keyboard."""
     await callback.message.edit_text(
-        "✏️ لطفاً مبلغ مورد نظر خود را برای شارژ حساب به **تومان** وارد کنید (به صورت عدد انگلیسی):",
-        reply_markup=back_to_menu_keyboard()
+        "✏️ لطفاً مبلغ مورد نظر خود را برای شارژ حساب به *تومان* وارد کنید \\(به صورت عدد انگلیسی\\):",
+        reply_markup=back_to_menu_keyboard(),
+        parse_mode="MarkdownV2"
     )
     await state.set_state(Form.waiting_for_charge_amount)
     await callback.answer()
@@ -749,9 +765,9 @@ async def process_charge_amount(message: Message, state: FSMContext):
     
     raw_payment_instructions = bot_texts.get("card_payment_instructions", DEFAULT_TEXTS["card_payment_instructions"])
     payment_txt = raw_payment_instructions.format(
-        amount=f"{amount:,}",
-        card_number=card_num,
-        card_holder=card_holder_name
+        amount=escape_md(f"{amount:,}"),
+        card_number=escape_md(card_num),
+        card_holder=escape_md(card_holder_name)
     )
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -761,7 +777,7 @@ async def process_charge_amount(message: Message, state: FSMContext):
         [InlineKeyboardButton(text="🔙 بازگشت", callback_data="btn_main_menu")]
     ])
     
-    await safe_reply(message, payment_txt, reply_markup=kb, parse_mode="HTML")
+    await safe_reply(message, payment_txt, reply_markup=kb, parse_mode="MarkdownV2")
     await state.set_state(Form.waiting_for_receipt)
 
 @router.message(Form.waiting_for_receipt, F.photo)
@@ -785,7 +801,7 @@ async def process_receipt_photo(message: Message, state: FSMContext):
         db.commit()
         tx_id = tx.id
 
-    await message.reply("✅ رسید شما با موفقیت ثبت شد و در انتظار تایید مدیریت قرار گرفت. به محض بررسی وضعیت آن به شما اطلاع داده خواهد شد.", reply_markup=back_to_menu_keyboard())
+    await message.reply("✅ رسید شما با موفقیت ثبت شد و در انتظار تایید مدیریت قرار گرفت\\. به محض بررسی وضعیت آن به شما اطلاع داده خواهد شد\\.", reply_markup=back_to_menu_keyboard(), parse_mode="MarkdownV2")
     await state.clear()
 
     admin_markup = InlineKeyboardMarkup(inline_keyboard=[
@@ -800,9 +816,9 @@ async def process_receipt_photo(message: Message, state: FSMContext):
             await bot.send_photo(
                 chat_id=admin_id,
                 photo=photo_id,
-                caption=f"⚡️ **رسید پرداخت جدید دریافت شد**\n\n👤 کاربر: {message.from_user.first_name} ({message.from_user.id})\n💵 مبلغ: **{amount:,}** تومان\n\nآیا این رسید را تایید می‌کنید؟",
+                caption=f"⚡️ *رسید پرداخت جدید دریافت شد*\n\n👤 کاربر: {escape_md(message.from_user.first_name)} \\({message.from_user.id}\\)\n💵 مبلغ: *{escape_md(f'{amount:,}')}* تومان\n\nآیا این رسید را تایید می‌کنید؟",
                 reply_markup=admin_markup,
-                parse_mode="Markdown"
+                parse_mode="MarkdownV2"
             )
         except Exception as e:
             logger.error(f"Error notifying admin {admin_id}: {e}")
@@ -822,7 +838,7 @@ async def charge_crypto_callback(callback: CallbackQuery):
         kb.append([InlineKeyboardButton(text="🔴 شبکه TRX", callback_data="cry_TRX")])
         
     if not kb:
-        return await callback.answer("⚠️ در حال حاضر هیچ درگاه پرداخت رمزارزی توسط مدیریت ثبت نشده است.", show_alert=True)
+        return await callback.answer("⚠️ در حال حاضر هیچ درگاه پرداخت رمزارزی توسط مدیریت ثبت نشده است\\.", show_alert=True)
         
     kb.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="btn_wallet")])
     await callback.message.edit_text("⚙️ لطفاً رمزارز مورد نظر خود را جهت واریز وجه انتخاب کنید:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
@@ -836,14 +852,14 @@ async def process_crypto_asset(callback: CallbackQuery, state: FSMContext):
     address = config.get(addr_key, "")
     
     if not address:
-        return await callback.answer("❌ آدرس این کیف پول پیکربندی نشده است.", show_alert=True)
+        return await callback.answer("❌ آدرس این کیف پول پیکربندی نشده است\\.", show_alert=True)
         
     await state.update_data(crypto_asset=asset, crypto_address=address)
     
     raw_instructions = bot_texts.get("crypto_payment_instructions", DEFAULT_TEXTS["crypto_payment_instructions"])
     crypto_instructions = raw_instructions.format(
-        asset=asset,
-        address=address
+        asset=escape_md(asset),
+        address=escape_md(address)
     )
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -851,7 +867,7 @@ async def process_crypto_asset(callback: CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text="🔙 بازگشت", callback_data="btn_charge_crypto")]
     ])
     
-    await safe_edit(callback.message, crypto_instructions, reply_markup=kb, parse_mode="HTML")
+    await safe_edit(callback.message, crypto_instructions, reply_markup=kb, parse_mode="MarkdownV2")
     await state.set_state(Form.waiting_for_crypto_receipt)
     await callback.answer()
 
@@ -864,7 +880,7 @@ async def process_crypto_receipt(message: Message, state: FSMContext):
     tx_hash = message.text.strip() if message.text else None
     
     if not photo_id and not tx_hash:
-        return await message.reply("❌ خطا: لطفاً یک فیش تصویری ارسال کنید یا کد پیگیری (TXID) تراکنش را به صورت متنی وارد کنید.")
+        return await message.reply("❌ خطا: لطفاً یک فیش تصویری ارسال کنید یا کد پیگیری (TXID) تراکنش را به صورت متنی وارد کنید\\.")
         
     with SessionLocal() as db:
         user = get_or_create_db_user(db, message.from_user)
@@ -881,14 +897,14 @@ async def process_crypto_receipt(message: Message, state: FSMContext):
         db.commit()
         tx_id = tx.id
         
-    await message.reply("✅ رسید تراکنش رمزارز شما با موفقیت ثبت شد و جهت بررسی در اختیار مدیریت قرار گرفت.", reply_markup=back_to_menu_keyboard())
+    await message.reply("✅ رسید تراکنش رمزارز شما با موفقیت ثبت شد و جهت بررسی در اختیار مدیریت قرار گرفت\\.", reply_markup=back_to_menu_keyboard(), parse_mode="MarkdownV2")
     await state.clear()
     
     admin_cap = (
-        f"💎 **واریز رمزارز جدید ({asset})**\n\n"
-        f"👤 کاربر: {message.from_user.first_name} ({message.from_user.id})\n"
-        f"🔑 هش تراکنش: `{tx_hash or 'ارسال نشده'}`\n\n"
-        f"جهت تایید این واریزی می‌توانید با تخصیص موجودی دستی از منوی ادمین اقدام نمایید."
+        f"💎 *واریز رمزارز جدید \\({escape_md(asset)}\\)*\n\n"
+        f"👤 کاربر: {escape_md(message.from_user.first_name)} \\({message.from_user.id}\\)\n"
+        f"🔑 هش تراکنش: `{escape_md_code(tx_hash or 'ارسال نشده')}`\n\n"
+        f"جهت تایید این واریزی می‌توانید با تخصیص موجودی دستی از منوی ادمین اقدام نمایید\\."
     )
     
     admin_markup = InlineKeyboardMarkup(inline_keyboard=[
@@ -901,9 +917,9 @@ async def process_crypto_receipt(message: Message, state: FSMContext):
     for admin_id in config["ADMIN_IDS"]:
         try:
             if photo_id:
-                await bot.send_photo(chat_id=admin_id, photo=photo_id, caption=admin_cap, reply_markup=admin_markup, parse_mode="Markdown")
+                await bot.send_photo(chat_id=admin_id, photo=photo_id, caption=admin_cap, reply_markup=admin_markup, parse_mode="MarkdownV2")
             else:
-                await bot.send_message(chat_id=admin_id, text=admin_cap, reply_markup=admin_markup, parse_mode="Markdown")
+                await bot.send_message(chat_id=admin_id, text=admin_cap, reply_markup=admin_markup, parse_mode="MarkdownV2")
         except Exception as e:
             logger.error(f"Error alerting admins for crypto transaction: {e}")
 
@@ -917,17 +933,17 @@ async def buy_service_callback(callback: CallbackQuery, state: FSMContext):
     
     if config.get("SHOP_CLOSED") and callback.from_user.id not in config["ADMIN_IDS"]:
         closed_txt = bot_texts.get("shop_closed_text", DEFAULT_TEXTS["shop_closed_text"])
-        return await safe_edit(callback.message, closed_txt, reply_markup=back_to_menu_keyboard(), parse_mode="HTML")
+        return await safe_edit(callback.message, closed_txt, reply_markup=back_to_menu_keyboard(), parse_mode="MarkdownV2")
         
-    await callback.message.edit_text("⏳ در حال دریافت لیست پلن‌ها از سرور...")
+    await callback.message.edit_text("⏳ در حال دریافت لیست پلن‌ها از سرور\\.\\.\\.", parse_mode="MarkdownV2")
     
     plans_data = api.get_plans()
     if not plans_data or not plans_data.get("success"):
-        return await callback.message.edit_text("❌ خطا در ارتباط با سرور یا دریافت اطلاعات پلن‌ها. لطفا مجدداً تلاش کنید.", reply_markup=back_to_menu_keyboard())
+        return await callback.message.edit_text("❌ خطا در ارتباط با سرور یا دریافت اطلاعات پلن‌ها\\. لطفا مجدداً تلاش کنید\\.", reply_markup=back_to_menu_keyboard(), parse_mode="MarkdownV2")
         
     plans = plans_data.get("plans", [])
     if not plans:
-        return await callback.message.edit_text("🛒 در حال حاضر پلن فعالی جهت فروش موجود نیست.", reply_markup=back_to_menu_keyboard())
+        return await callback.message.edit_text("🛒 در حال حاضر پلن فعالی جهت فروش موجود نیست\\.", reply_markup=back_to_menu_keyboard(), parse_mode="MarkdownV2")
         
     kb = []
     row = []
@@ -958,7 +974,7 @@ async def buy_service_callback(callback: CallbackQuery, state: FSMContext):
 async def buy_plan_callback(callback: CallbackQuery, state: FSMContext):
     """Evaluates checkout affordability and requests custom service descriptor."""
     if config.get("SHOP_CLOSED") and callback.from_user.id not in config["ADMIN_IDS"]:
-        return await callback.answer("⚠️ فروشگاه موقتاً تعطیل است و امکان ثبت سفارش جدید وجود ندارد.", show_alert=True)
+        return await callback.answer("⚠️ فروشگاه موقتاً تعطیل است و امکان ثبت سفارش جدید وجود ندارد\\.", show_alert=True)
 
     parts = callback.data.split("_")
     plan_id = int(parts[2])
@@ -969,21 +985,21 @@ async def buy_plan_callback(callback: CallbackQuery, state: FSMContext):
         if user.balance < price:
             raw_insufficient_txt = bot_texts.get("insufficient_balance_text", DEFAULT_TEXTS["insufficient_balance_text"])
             insufficient_txt = raw_insufficient_txt.format(
-                price=f"{price:,}",
-                balance=f"{int(user.balance):,}"
+                price=escape_md(f"{price:,}"),
+                balance=escape_md(f"{int(user.balance):,}")
             )
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="💳 افزایش موجودی حساب", callback_data="btn_charge_wallet", style="success")],
                 [InlineKeyboardButton(text="🔙 بازگشت", callback_data="btn_buy_service")]
             ])
-            return await safe_edit(callback.message, insufficient_txt, reply_markup=kb, parse_mode="HTML")
+            return await safe_edit(callback.message, insufficient_txt, reply_markup=kb, parse_mode="MarkdownV2")
             
     await state.update_data(buy_plan_id=plan_id, buy_price=price)
     
     name_instructions = (
-        "✏️ لطفاً یک نام کوتاه انگلیسی (فقط حروف و اعداد بین ۳ تا ۱۲ کاراکتر) برای سرویس خود وارد کنید:\n\n"
+        "✏️ لطفاً یک نام کوتاه انگلیسی \\(فقط حروف و اعداد بین ۳ تا ۱۲ کاراکتر\\) برای سرویس خود وارد کنید:\n\n"
         "مثال: `myvpn`\n\n"
-        "🎲 یا می‌توانید از دکمه زیر جهت تولید نام کاملاً تصادفی استفاده کنید."
+        "🎲 یا می‌توانید از دکمه زیر جهت تولید نام کاملاً تصادفی استفاده کنید\\."
     )
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -991,7 +1007,7 @@ async def buy_plan_callback(callback: CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text="🔙 بازگشت", callback_data="btn_buy_service")]
     ])
     
-    await callback.message.edit_text(name_instructions, reply_markup=kb, parse_mode="Markdown")
+    await callback.message.edit_text(name_instructions, reply_markup=kb, parse_mode="MarkdownV2")
     await state.set_state(Form.waiting_for_service_name)
     await callback.answer()
 
@@ -1008,7 +1024,7 @@ async def process_service_name(message: Message, state: FSMContext):
     """Validates specified name format and displays confirmation invoice."""
     name = message.text.strip()
     if not re.match(r"^[a-zA-Z0-9]{3,12}$", name):
-        return await message.reply("❌ خطا: نام سرویس فقط باید شامل حروف انگلیسی و اعداد بین ۳ تا ۱۲ کاراکتر باشد. مجدداً ارسال کنید:")
+        return await message.reply("❌ خطا: نام سرویس فقط باید شامل حروف انگلیسی و اعداد بین ۳ تا ۱۲ کاراکتر باشد\\. مجدداً ارسال کنید:", parse_mode="MarkdownV2")
         
     await state.update_data(buy_service_name=name)
     await render_checkout_invoice(message, state)
@@ -1035,18 +1051,18 @@ async def render_checkout_invoice(message_to_send: Message, state: FSMContext):
     await state.update_data(buy_final_price=final_price)
     
     confirm_txt = (
-        "🧾 **پیش‌فاکتور نهایی خرید سرویس**\n\n"
-        f"🖥 نام سرویس: `{(name)}`\n"
-        f"💵 قیمت پایه: **{int(original_price):,}** تومان\n"
+        "🧾 *پیش‌فاکتور نهایی خرید سرویس*\n\n"
+        f"🖥 نام سرویس: `{escape_md_code(name)}`\n"
+        f"💵 قیمت پایه: *{escape_md(f'{int(original_price):,}')}* تومان\n"
     )
     
     if discount_code:
         confirm_txt += (
-            f"🎟 کد تخفیف اعمال شده: `{(discount_code)}`\n"
-            f"🎁 مقدار کسر شده: **{int(discount_amount):,}** تومان\n"
+            f"🎟 کد تخفیف اعمال شده: `{escape_md_code(discount_code)}`\n"
+            f"🎁 مقدار کسر شده: *{escape_md(f'{int(discount_amount):,}')}* تومان\n"
         )
         
-    confirm_txt += f"\n💳 **مبلغ قابل پرداخت نهایی: {int(final_price):,} تومان**"
+    confirm_txt += f"\n💳 *مبلغ قابل پرداخت نهایی: {escape_md(f'{int(final_price):,}')} تومان*"
     
     kb = [
         [
@@ -1059,18 +1075,19 @@ async def render_checkout_invoice(message_to_send: Message, state: FSMContext):
     ]
     
     if isinstance(message_to_send, Message):
-        await safe_reply(message_to_send, confirm_txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
+        await safe_reply(message_to_send, confirm_txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="MarkdownV2")
     else:
-        await safe_edit(message_to_send, confirm_txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
+        await safe_edit(message_to_send, confirm_txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="MarkdownV2")
 
 @router.callback_query(F.data == "btn_apply_checkout_discount")
 async def btn_apply_checkout_discount_callback(callback: CallbackQuery, state: FSMContext):
     """Requests promotional code entry to apply discount value during checkouts."""
     await callback.message.edit_text(
-        "✏️ لطفاً کد تخفیف خود را وارد کنید (به بزرگی و کوچکی حروف دقت کنید):",
+        "✏️ لطفاً کد تخفیف خود را وارد کنید \\(به بزرگی و کوچکی حروف دقت کنید\\):",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔙 انصراف و بازگشت", callback_data="btn_cancel_discount_application")]
-        ])
+        ]),
+        parse_mode="MarkdownV2"
     )
     await state.set_state(Form.waiting_for_discount_code_input)
     await callback.answer()
@@ -1094,28 +1111,28 @@ async def process_discount_code_input_checkout(message: Message, state: FSMConte
         ).first()
         
         if not dc:
-            return await message.reply("❌ خطا: این کد تخفیف وجود ندارد یا غیرفعال شده است. مجددا تلاش کنید یا انصراف دهید:")
+            return await message.reply("❌ خطا: این کد تخفیف وجود ندارد یا غیرفعال شده است\\. مجددا تلاش کنید یا انصراف دهید:", parse_mode="MarkdownV2")
             
         if dc.expiry_date and dc.expiry_date < datetime.utcnow():
-            return await message.reply("❌ خطا: مدت اعتبار این کد تخفیف به پایان رسیده است.")
+            return await message.reply("❌ خطا: مدت اعتبار این کد تخفیف به پایان رسیده است\\.", parse_mode="MarkdownV2")
             
         if dc.used_count >= dc.usage_limit:
-            return await message.reply("❌ خطا: سقف تعداد دفعات استفاده از این کد تخفیف پر شده است.")
+            return await message.reply("❌ خطا: سقف تعداد دفعات استفاده از این کد تخفیف پر شده است\\.", parse_mode="MarkdownV2")
             
         if dc.specific_user_id and dc.specific_user_id != message.from_user.id:
-            return await message.reply("❌ خطا: این کد تخفیف مخصوص یک کاربر دیگر طراحی شده است و شما مجاز به استفاده از آن نیستید.")
+            return await message.reply("❌ خطا: این کد تخفیف مخصوص یک کاربر دیگر طراحی شده است و شما مجاز به استفاده از آن نیستید\\.", parse_mode="MarkdownV2")
             
     await state.update_data(applied_discount_code=dc.code)
     await state.set_state(Form.waiting_for_service_name)
     
-    await message.reply(f"✅ کد تخفیف `{dc.code}` با موفقیت بر روی فاکتور شما اعمال گردید.")
+    await message.reply(f"✅ کد تخفیف `{escape_md_code(dc.code)}` با موفقیت بر روی فاکتور شما اعمال گردید\\.", parse_mode="MarkdownV2")
     await render_checkout_invoice(message, state)
 
 @router.callback_query(F.data == "confirm_buy_final")
 async def confirm_buy_final_callback(callback: CallbackQuery, state: FSMContext):
     """Requests account creation and balance deduction, then returns the credential URL & Configs."""
     if config.get("SHOP_CLOSED") and callback.from_user.id not in config["ADMIN_IDS"]:
-        return await callback.answer("⚠️ فروشگاه موقتاً تعطیل است و امکان ثبت سفارش جدید وجود ندارد.", show_alert=True)
+        return await callback.answer("⚠️ فروشگاه موقتاً تعطیل است و امکان ثبت سفارش جدید وجود ندارد\\.", show_alert=True)
 
     state_data = await state.get_data()
     plan_id = state_data.get("buy_plan_id")
@@ -1124,14 +1141,14 @@ async def confirm_buy_final_callback(callback: CallbackQuery, state: FSMContext)
     discount_code = state_data.get("applied_discount_code", None)
     
     if not plan_id or not name:
-        return await callback.message.edit_text("❌ خطا در بازیابی اطلاعات نشست خرید. مجدداً اقدام کنید.", reply_markup=back_to_menu_keyboard())
+        return await callback.message.edit_text("❌ خطا در بازیابی اطلاعات نشست خرید\\. مجدداً اقدام کنید\\.", reply_markup=back_to_menu_keyboard(), parse_mode="MarkdownV2")
         
-    await callback.message.edit_text("⏳ در حال برقراری ارتباط با سرور و پیکربندی اکانت...")
+    await callback.message.edit_text("⏳ در حال برقراری ارتباط با سرور و پیکربندی اکانت\\.\\.\\.", parse_mode="MarkdownV2")
     
     with SessionLocal() as db:
         user = db.query(DBUser).filter(DBUser.telegram_id == callback.from_user.id).first()
         if not user or user.balance < price:
-            return await callback.message.edit_text("❌ موجودی حساب شما کافی نیست یا کاربر یافت نشد.", reply_markup=back_to_menu_keyboard())
+            return await callback.message.edit_text("❌ موجودی حساب شما کافی نیست یا کاربر یافت نشد\\.", reply_markup=back_to_menu_keyboard(), parse_mode="MarkdownV2")
             
         res_data, status_code = api.buy_service(plan_id, name, callback.from_user.id)
         if status_code == 200 and res_data.get("success"):
@@ -1169,12 +1186,12 @@ async def confirm_buy_final_callback(callback: CallbackQuery, state: FSMContext)
             configs_list = [cfg for cfg in configs_list if "/sub/" not in cfg]
             
             raw_success_txt = bot_texts.get("purchase_success_text", DEFAULT_TEXTS["purchase_success_text"])
-            success_txt = raw_success_txt.format(sub_link=sub_link)
+            success_txt = raw_success_txt.format(sub_link=escape_md_code(sub_link))
             
             if configs_list:
-                success_txt += "🔌 **کانفیگ‌های اتصال مستقیم شما:**\n\n"
+                success_txt += "🔌 *کانفیگ‌های اتصال مستقیم شما:*\n\n"
                 for index, cfg in enumerate(configs_list[:3]):
-                    success_txt += f"**کانفیگ {index+1}:**\n`{cfg}`\n\n"
+                    success_txt += f"*کانفیگ {index+1}:*\n`{escape_md_code(cfg)}`\n\n"
             
             kb_list = [
                 [InlineKeyboardButton(text="📋 کپی سریع لینک اشتراک", copy_text={"text": sub_link}, style="success")],
@@ -1182,26 +1199,26 @@ async def confirm_buy_final_callback(callback: CallbackQuery, state: FSMContext)
                 [InlineKeyboardButton(text="🔙 بازگشت به منوی اصلی", callback_data="btn_main_menu")]
             ]
             
-            await safe_edit(callback.message, success_txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_list), parse_mode="HTML")
+            await safe_edit(callback.message, success_txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_list), parse_mode="MarkdownV2")
 
             # Report purchase to Admins
             admin_msg = (
-                f"🔔 **گزارش خرید سرویس جدید**\n\n"
-                f"👤 خریدار: {user.first_name or 'نامشخص'} ({user.telegram_id})\n"
-                f"📦 پلن خریداری شده: (کد پلن: {plan_id})\n"
-                f"🖥 نام سرویس: `{name}`\n"
-                f"💵 قیمت نهایی: **{price:,}** تومان\n"
-                f"🎟 کد تخفیف اعمال شده: `{discount_code or 'هیچکدام'}`\n"
-                f"🔑 شناسه (UUID): `{res_data.get('uuid')}`"
+                f"🔔 *گزارش خرید سرویس جدید*\n\n"
+                f"👤 خریدار: {escape_md(user.first_name or 'نامشخص')} \\({user.telegram_id}\\)\n"
+                f"📦 پلن خریداری شده: \\(کد پلن: {plan_id}\\)\n"
+                f"🖥 نام سرویس: `{escape_md_code(name)}`\n"
+                f"💵 قیمت نهایی: *{escape_md(f'{price:,}')}* تومان\n"
+                f"🎟 کد تخفیف اعمال شده: `{escape_md_code(discount_code or 'هیچکدام')}`\n"
+                f"🔑 شناسه \\(UUID\\): `{escape_md_code(res_data.get('uuid'))}`"
             )
             for admin_id in config["ADMIN_IDS"]:
                 try:
-                    await bot.send_message(chat_id=admin_id, text=admin_msg, parse_mode="Markdown")
+                    await bot.send_message(chat_id=admin_id, text=admin_msg, parse_mode="MarkdownV2")
                 except Exception as e:
                     logger.error(f"Error sending buy report to admin {admin_id}: {e}")
         else:
             err_msg = res_data.get("error", "An error occurred during purchase creation.")
-            await callback.message.edit_text(f"❌ **خطا در هنگام ساخت اکانت روی سرور:**\n\n`{err_msg}`", reply_markup=back_to_menu_keyboard(), parse_mode="Markdown")
+            await callback.message.edit_text(f"❌ *خطا در هنگام ساخت اکانت روی سرور:*\n\n`{escape_md_code(err_msg)}`", reply_markup=back_to_menu_keyboard(), parse_mode="MarkdownV2")
             
     await state.clear()
     await callback.answer()
@@ -1212,14 +1229,14 @@ async def confirm_buy_final_callback(callback: CallbackQuery, state: FSMContext)
 @router.callback_query(F.data == "btn_my_services")
 async def my_services_callback(callback: CallbackQuery):
     """Retrieves client subscriptions and populates active services menu."""
-    await callback.message.edit_text("⏳ در حال دریافت لیست سرویس‌های شما از سرور...")
+    await callback.message.edit_text("⏳ در حال دریافت لیست سرویس‌های شما از سرور\\.\\.\\.", parse_mode="MarkdownV2")
     
     with SessionLocal() as db:
         user = get_or_create_db_user(db, callback.from_user)
         services = db.query(DBService).filter(DBService.user_id == user.id).all()
         
     if not services:
-        return await callback.message.edit_text("🌐 شما هیچ سرویس فعالی ثبت نکرده‌اید.", reply_markup=back_to_menu_keyboard())
+        return await callback.message.edit_text("🌐 شما هیچ سرویس فعالی ثبت نکرده‌اید\\.", reply_markup=back_to_menu_keyboard(), parse_mode="MarkdownV2")
         
     kb = []
     row = []
@@ -1243,17 +1260,17 @@ async def srv_view_callback(callback: CallbackQuery):
     with SessionLocal() as db:
         srv = db.query(DBService).get(srv_id)
         if not srv:
-            return await callback.message.edit_text("❌ سرویس مورد نظر در سیستم یافت نشد.", reply_markup=back_to_menu_keyboard())
+            return await callback.message.edit_text("❌ سرویس مورد نظر در سیستم یافت نشد\\.", reply_markup=back_to_menu_keyboard(), parse_mode="MarkdownV2")
             
-    await callback.message.edit_text("⏳ در حال دریافت جزئیات و ترافیک لحظه‌ای از سرور...")
+    await callback.message.edit_text("⏳ در حال دریافت جزئیات و ترافیک لحظه‌ای از سرور\\.\\.\\.", parse_mode="MarkdownV2")
     
     details = api.get_service_details(srv.service_id)
     if not details or not details.get("success"):
         detail_txt = (
-            f"ℹ️ **جزئیات سرویس: {srv.name}**\n\n"
-            f"🔑 شناسه (UUID): `{srv.uuid}`\n"
-            f"📡 وضعیت: **{srv.status}**\n\n"
-            "⚠️ دریافت اطلاعات مصرف حجم لایو از سرور مقدور نبود."
+            f"ℹ️ *جزئیات سرویس: {escape_md(srv.name)}*\n\n"
+            f"🔑 شناسه \\(UUID\\): `{escape_md_code(srv.uuid)}`\n"
+            f"📡 وضعیت: *{escape_md(srv.status)}*\n\n"
+            "⚠️ دریافت اطلاعات مصرف حجم لایو از سرور مقدور نبود\\."
         )
         kb = [
             [
@@ -1261,7 +1278,7 @@ async def srv_view_callback(callback: CallbackQuery):
                 InlineKeyboardButton(text="🔙 بازگشت به لیست", callback_data="btn_my_services")
             ]
         ]
-        return await callback.message.edit_text(detail_txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
+        return await callback.message.edit_text(detail_txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="MarkdownV2")
         
     status = details.get("status", "active")
     total_gb = details.get("traffic_total_gb", 0)
@@ -1281,12 +1298,12 @@ async def srv_view_callback(callback: CallbackQuery):
         db.commit()
 
     detail_txt = (
-        f"ℹ️ **مشخصات سرویس: {srv.name}**\n\n"
-        f"📊 مصرف ترافیک: **{used_gb:.2f}** از **{total_gb:.2f} GB**\n"
-        f"🔋 حجم باقیمانده: **{remain_gb:.2f} GB**\n"
-        f"⏳ تاریخ انقضا: **{expire_date}**\n"
-        f"📡 وضعیت: **{status}**\n\n"
-        f"🔗 **لینک اشتراک:**\n`{sub_url}`"
+        f"ℹ️ *مشخصات سرویس: {escape_md(srv.name)}*\n\n"
+        f"📊 مصرف ترافیک: *{escape_md(f'{used_gb:.2f}')}* از *{escape_md(f'{total_gb:.2f}')} GB*\n"
+        f"🔋 حجم باقیمانده: *{escape_md(f'{remain_gb:.2f}')} GB*\n"
+        f"⏳ تاریخ انقضا: *{escape_md(expire_date)}*\n"
+        f"📡 وضعیت: *{escape_md(status)}*\n\n"
+        f"🔗 *لینک اشتراک:*\n`{escape_md_code(sub_url)}`"
     )
     
     kb = [
@@ -1316,14 +1333,14 @@ async def srv_view_callback(callback: CallbackQuery):
         toggle_txt = "🔴 غیرفعال کردن سرویس" if status == "active" else "🟢 فعال کردن سرویس"
         kb.append([InlineKeyboardButton(text=toggle_txt, callback_data=f"srv_toggle_{srv_id}", style="danger")])
         
-    await safe_edit(callback.message, detail_txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
+    await safe_edit(callback.message, detail_txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="MarkdownV2")
     await callback.answer()
 
 @router.callback_query(F.data.startswith("srv_toggle_"))
 async def srv_toggle_callback(callback: CallbackQuery):
     """Updates active status of a service on the target panel (enable/disable) for admins."""
     if callback.from_user.id not in config["ADMIN_IDS"]:
-        return await callback.answer("❌ دسترسی غیرمجاز: تنها مدیریت مجاز به قطع موقت سرویس‌ها می‌باشد.", show_alert=True)
+        return await callback.answer("❌ دسترسی غیرمجاز: تنها مدیریت مجاز به قطع موقت سرویس‌ها می‌باشد\\.", show_alert=True)
         
     srv_id = int(callback.data.split("_")[2])
     with SessionLocal() as db:
@@ -1331,13 +1348,13 @@ async def srv_toggle_callback(callback: CallbackQuery):
         if not srv: return
         
     action = "disable" if srv.status == "active" else "enable"
-    await callback.message.edit_text("⏳ در حال ارسال دستور تغییر وضعیت به سرور...")
+    await callback.message.edit_text("⏳ در حال ارسال دستور تغییر وضعیت به سرور\\.\\.\\.", parse_mode="MarkdownV2")
     
     res = api.toggle_service(srv.service_id, action)
     if res and res.get("success"):
-        await callback.answer("✅ وضعیت سرویس با موفقیت تغییر کرد.", show_alert=True)
+        await callback.answer("✅ وضعیت سرویس با موفقیت تغییر کرد\\.", show_alert=True)
     else:
-        await callback.answer("❌ خطا در تغییر وضعیت سرویس در سرور.", show_alert=True)
+        await callback.answer("❌ خطا در تغییر وضعیت سرویس در سرور\\.", show_alert=True)
         
     await srv_view_callback(callback)
 
@@ -1352,44 +1369,44 @@ async def srv_qr_callback(callback: CallbackQuery):
     qr_data = srv.sub_url or f"{config['API_BASE_URL'].rstrip('/')}/sub/{srv.uuid}"
     qr_api_url = f"https://api.qrserver.com/v1/create-qr-code/?size=250x250&data={urllib.parse.quote(qr_data)}"
     
-    await callback.message.edit_text("⏳ در حال تولید کد QR اختصاصی...")
+    await callback.message.edit_text("⏳ در حال تولید کد QR اختصاصی\\.\\.\\.", parse_mode="MarkdownV2")
     try:
         r = requests.get(qr_api_url, timeout=10)
         if r.status_code == 200:
             qr_file = BufferedInputFile(r.content, filename="qrcode.png")
             await callback.message.reply_photo(
                 photo=qr_file,
-                caption=f"📸 **کد QR لینک اشتراک سرویس: {srv.name}**\n\n`{qr_data}`",
-                parse_mode="Markdown"
+                caption=f"📸 *کد QR لینک اشتراک سرویس: {escape_md(srv.name)}*\n\n`{escape_md_code(qr_data)}`",
+                parse_mode="MarkdownV2"
             )
             await callback.message.delete()
         else:
             raise Exception("Non-200 Response from API")
     except Exception as e:
         logger.error(f"Error creating QR code image: {e}")
-        await callback.answer("❌ خطا در ایجاد عکس QR Code. لینک به صورت متن ارسال شد.", show_alert=True)
-        await callback.message.reply(f"🔗 **لینک اشتراک شما:**\n\n`{qr_data}`", parse_mode="Markdown")
+        await callback.answer("❌ خطا در ایجاد عکس QR Code\\. لینک به صورت متن ارسال شد\\.", show_alert=True)
+        await callback.message.reply(f"🔗 *لینک اشتراک شما:*\n\n`{escape_md_code(qr_data)}`", parse_mode="MarkdownV2")
 
 @router.callback_query(F.data.startswith("srv_renew_"))
 async def srv_renew_callback(callback: CallbackQuery):
     """Forces renewal only to current service plan to maintain consistent parameters."""
     if config.get("SHOP_CLOSED") and callback.from_user.id not in config["ADMIN_IDS"]:
         closed_txt = bot_texts.get("shop_closed_text", DEFAULT_TEXTS["shop_closed_text"])
-        return await safe_edit(callback.message, closed_txt, reply_markup=back_to_menu_keyboard(), parse_mode="HTML")
+        return await safe_edit(callback.message, closed_txt, reply_markup=back_to_menu_keyboard(), parse_mode="MarkdownV2")
 
     srv_id = int(callback.data.split("_")[2])
-    await callback.message.edit_text("⏳ در حال استعلام مشخصات پلن فعلی از سرور...")
+    await callback.message.edit_text("⏳ در حال استعلام مشخصات پلن فعلی از سرور\\.\\.\\.", parse_mode="MarkdownV2")
     
     with SessionLocal() as db:
         srv = db.query(DBService).get(srv_id)
         if not srv or not srv.plan_id:
-            return await callback.message.edit_text("❌ خطا: کد پلن اصلی متصل به این سرویس یافت نشد.", reply_markup=back_to_menu_keyboard())
+            return await callback.message.edit_text("❌ خطا: کد پلن اصلی متصل به این سرویس یافت نشد\\.", reply_markup=back_to_menu_keyboard(), parse_mode="MarkdownV2")
             
         target_plan_id = srv.plan_id
 
     plans_data = api.get_plans()
     if not plans_data or not plans_data.get("success"):
-        return await callback.message.edit_text("❌ خطا در دریافت پلن‌ها از سرور.", reply_markup=back_to_menu_keyboard())
+        return await callback.message.edit_text("❌ خطا در دریافت پلن‌ها از سرور\\.", reply_markup=back_to_menu_keyboard(), parse_mode="MarkdownV2")
         
     plans = plans_data.get("plans", [])
     matched_plan = None
@@ -1399,7 +1416,7 @@ async def srv_renew_callback(callback: CallbackQuery):
             break
             
     if not matched_plan:
-        return await callback.message.edit_text("❌ خطا: این پلن دیگر روی سرور اصلی فعال نیست یا امکان تمدید مستقیم آن وجود ندارد.", reply_markup=back_to_menu_keyboard())
+        return await callback.message.edit_text("❌ خطا: این پلن دیگر روی سرور اصلی فعال نیست یا امکان تمدید مستقیم آن وجود ندارد\\.", reply_markup=back_to_menu_keyboard(), parse_mode="MarkdownV2")
         
     with SessionLocal() as db:
         override = db.query(DBPlanOverride).filter(DBPlanOverride.plan_id == matched_plan['id']).first()
@@ -1412,12 +1429,12 @@ async def srv_renew_callback(callback: CallbackQuery):
     ]
     
     await callback.message.edit_text(
-        f"🔄 **درخواست تمدید سرویس: {srv.name}**\n\n"
-        f"📦 پلن فعلی شما: **{p_title}**\n"
-        f"💵 هزینه تمدید دوره: **{p_price:,}** تومان\n\n"
+        f"🔄 *درخواست تمدید سرویس: {escape_md(srv.name)}*\n\n"
+        f"📦 پلن فعلی شما: *{escape_md(p_title)}*\n"
+        f"💵 هزینه تمدید دوره: *{escape_md(f'{p_price:,}')}* تومان\n\n"
         "آیا مایل هستید سرویس شما برای یک دوره دیگر تمدید شود؟",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=kb),
-        parse_mode="Markdown"
+        parse_mode="MarkdownV2"
     )
     await callback.answer()
 
@@ -1425,7 +1442,7 @@ async def srv_renew_callback(callback: CallbackQuery):
 async def renew_confirm_callback(callback: CallbackQuery):
     """Processes final renewal payment, deducts local balance, and registers state."""
     if config.get("SHOP_CLOSED") and callback.from_user.id not in config["ADMIN_IDS"]:
-        return await callback.answer("⚠️ فروشگاه موقتاً تعطیل است و امکان تمدید سرویس وجود ندارد.", show_alert=True)
+        return await callback.answer("⚠️ فروشگاه موقتاً تعطیل است و امکان تمدید سرویس وجود ندارد\\.", show_alert=True)
 
     parts = callback.data.split("_")
     srv_id = int(parts[2])
@@ -1435,12 +1452,12 @@ async def renew_confirm_callback(callback: CallbackQuery):
     with SessionLocal() as db:
         user = get_or_create_db_user(db, callback.from_user)
         if user.balance < price:
-            return await callback.answer("❌ موجودی حساب شما برای این تمدید کافی نیست.", show_alert=True)
+            return await callback.answer("❌ موجودی حساب شما برای این تمدید کافی نیست\\.", show_alert=True)
             
         srv = db.query(DBService).get(srv_id)
         if not srv: return
         
-    await callback.message.edit_text("⏳ در حال تمدید اشتراک بر روی سرور...")
+    await callback.message.edit_text("⏳ در حال تمدید اشتراک بر روی سرور\\.\\.\\.", parse_mode="MarkdownV2")
     
     res_data, status_code = api.renew_service(srv.service_id, plan_id)
     if status_code == 200 and res_data.get("success"):
@@ -1458,17 +1475,17 @@ async def renew_confirm_callback(callback: CallbackQuery):
             db.add(tx)
             db.commit()
             
-        await callback.answer("🎉 سرویس شما با موفقیت تمدید شد!", show_alert=True)
+        await callback.answer("🎉 سرویس شما با موفقیت تمدید شد\\!", show_alert=True)
 
         admin_msg = (
-            f"🔄 **گزارش تمدید سرویس**\n\n"
-            f"👤 کاربر: {db_user.first_name or 'نامشخص'} ({db_user.telegram_id})\n"
-            f"🖥 سرویس: `{srv.name}` (کد سرویس: {srv.service_id})\n"
-            f"💵 هزینه تمدید: **{price:,}** تومان"
+            f"🔄 *گزارش تمدید سرویس*\n\n"
+            f"👤 کاربر: {escape_md(db_user.first_name or 'نامشخص')} \\({db_user.telegram_id}\\)\n"
+            f"🖥 سرویس: `{escape_md(srv.name)}` \\(کد سرویس: {srv.service_id}\\)\n"
+            f"💵 هزینه تمدید: *{escape_md(f'{price:,}')}* تومان"
         )
         for admin_id in config["ADMIN_IDS"]:
             try:
-                await bot.send_message(chat_id=admin_id, text=admin_msg, parse_mode="Markdown")
+                await bot.send_message(chat_id=admin_id, text=admin_msg, parse_mode="MarkdownV2")
             except Exception as e:
                 logger.error(f"Error sending renewal report to admin {admin_id}: {e}")
     else:
@@ -1491,15 +1508,15 @@ async def admin_panel_callback(callback: CallbackQuery, state: FSMContext):
         total_users = db.query(DBUser).count()
         pending_txs = db.query(DBTransaction).filter(DBTransaction.status == "pending").all()
         
-    maint_status = "🔴 فعال (تعمیرات)" if config.get("MAINTENANCE_MODE") else "🟢 غیرفعال (عادی)"
+    maint_status = "🔴 فعال \\(تعمیرات\\)" if config.get("MAINTENANCE_MODE") else "🟢 غیرفعال \\(عادی\\)"
     shop_status = "🔴 بسته" if config.get("SHOP_CLOSED") else "🟢 باز"
     
     txt = (
-        "⚙️ **پنل مدیریت ربات فروشگاهی نماینده**\n\n"
-        f"👥 کل کاربران عضو شده: **{total_users}** کاربر\n"
-        f"⏳ فیش‌های در انتظار بررسی: **{len(pending_txs)}** عدد\n\n"
-        f"🔧 وضعیت تعمیرات: **{maint_status}**\n"
-        f"🛒 وضعیت فروشگاه: **{shop_status}**"
+        f"⚙️ *پنل مدیریت ربات فروشگاهی نماینده*\n\n"
+        f"👥 کل کاربران عضو شده: *{total_users}* کاربر\n"
+        f"⏳ فیش‌های در انتظار بررسی: *{len(pending_txs)}* عدد\n\n"
+        f"🔧 وضعیت تعمیرات: *{maint_status}*\n"
+        f"🛒 وضعیت فروشگاه: *{shop_status}*"
     )
     
     kb = [
@@ -1551,7 +1568,7 @@ async def admin_panel_callback(callback: CallbackQuery, state: FSMContext):
         kb.insert(0, [InlineKeyboardButton(text="✍️ بررسی فیش‌های در انتظار", callback_data="btn_admin_review_pending", style="success")])
         
     kb.append([InlineKeyboardButton(text="🔙 بازگشت به منوی اصلی", callback_data="btn_main_menu")])
-    await callback.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
+    await callback.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="MarkdownV2")
     await callback.answer()
 
 # ---------------------------------------------------------------------------
@@ -1563,11 +1580,12 @@ async def adm_gift_all_users_init(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id not in config["ADMIN_IDS"]: return
     
     await callback.message.edit_text(
-        "🎁 **سیستم اعطای هدیه مالی به تمام کاربران**\n\n"
-        "لطفاً مبلغ مورد نظر جهت شارژ هدیه کیف پول تمام کاربران فعال ربات را به **تومان** وارد کنید:",
+        "🎁 *سیستم اعطای هدیه مالی به تمام کاربران*\n\n"
+        "لطفاً مبلغ مورد نظر جهت شارژ هدیه کیف پول تمام کاربران فعال ربات را به *تومان* وارد کنید:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔙 انصراف", callback_data="btn_admin_panel")]
-        ])
+        ]),
+        parse_mode="MarkdownV2"
     )
     await state.set_state(AdminStates.waiting_for_gift_amount)
     await callback.answer()
@@ -1587,9 +1605,9 @@ async def process_gift_all_users(message: Message, state: FSMContext):
         
     total_users = len(users)
     if total_users == 0:
-        return await message.reply("❌ هیچ کاربر فعالی در سیستم جهت دریافت هدیه یافت نشد.")
+        return await message.reply("❌ هیچ کاربر فعالی در سیستم جهت دریافت هدیه یافت نشد\\.", parse_mode="MarkdownV2")
         
-    progress_message = await message.reply("⏳ در حال آغاز فرآیند تخصیص اعتبار هدیه به کل کاربران...")
+    progress_message = await message.reply("⏳ در حال آغاز فرآیند تخصیص اعتبار هدیه به کل کاربران\\.\\.\\.", parse_mode="MarkdownV2")
     
     success_count = 0
     failed_count = 0
@@ -1617,7 +1635,8 @@ async def process_gift_all_users(message: Message, state: FSMContext):
             try:
                 await bot.send_message(
                     chat_id=u.telegram_id,
-                    text=f"🎁 **هدیه جدید دریافت شد!**\n\nمبلغ **{int(gift_amount):,}** تومان هدیه نقدی از طرف مدیریت به کیف پول شما افزوده شد.\nموجودی جدید شما: **{int(db_user.balance):,}** تومان"
+                    text=f"🎁 *هدیه جدید دریافت شد\\!*\n\nمبلغ *{escape_md(f'{int(gift_amount):,}')}* تومان هدیه نقدی از طرف مدیریت به کیف پول شما افزوده شد\\.\nموجودی جدید شما: *{escape_md(f'{int(db_user.balance):,}')}* تومان",
+                    parse_mode="MarkdownV2"
                 )
             except Exception:
                 pass
@@ -1633,18 +1652,19 @@ async def process_gift_all_users(message: Message, state: FSMContext):
         if (idx + 1) % checkpoint == 0 or (idx + 1) == total_users:
             percentage = int(((idx + 1) / total_users) * 100)
             try:
-                await progress_message.edit_text(f"⏳ فرآیند اعطای هدیه با موفقیت در جریان است: **{percentage}%**\n\nتعداد کل اعضا: {total_users}\nتعداد پرداخت موفق: {success_count}\nپرداخت ناموفق: {failed_count}")
+                await progress_message.edit_text(f"⏳ فرآیند اعطای هدیه با موفقیت در جریان است: *{percentage}%*\n\nتعداد کل اعضا: {total_users}\nتعداد پرداخت موفق: {success_count}\nپرداخت ناموفق: {failed_count}", parse_mode="MarkdownV2")
             except Exception:
                 pass
                 
     await progress_message.reply(
-        f"🎁 **پایان گزارش توزیع هدیه مالی همگانی:**\n\n"
-        f"✅ توزیع موفقیت‌آمیز: **{success_count}** کاربر\n"
-        f"❌ ناموفق / مسدود شده: **{failed_count}** کاربر\n"
-        f"💵 کل اعتبار توزیع شده: **{int(success_count * gift_amount):,}** تومان",
+        f"🎁 *پایان گزارش توزیع هدیه مالی همگانی:*\n\n"
+        f"✅ توزیع موفقیت‌آمیز: *{success_count}* کاربر\n"
+        f"❌ ناموفق / مسدود شده: *{failed_count}* کاربر\n"
+        f"💵 کل اعتبار توزیع شده: *{escape_md(f'{int(success_count * gift_amount):,}')}* تومان",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔙 بازگشت به پنل مدیریت", callback_data="btn_admin_panel")]
-        ])
+        ]),
+        parse_mode="MarkdownV2"
     )
 
 # ---------------------------------------------------------------------------
@@ -1659,9 +1679,9 @@ async def adm_discounts_menu(callback: CallbackQuery, state: FSMContext):
     with SessionLocal() as db:
         codes = db.query(DBDiscountCode).all()
         
-    txt = "🎟 **پنل مدیریت کدهای تخفیف سیستم**\n\n"
+    txt = "🎟 *پنل مدیریت کدهای تخفیف سیستم*\n\n"
     if not codes:
-        txt += "⚠️ در حال حاضر هیچ کد تخفیفی در سیستم ثبت نشده است."
+        txt += "⚠️ در حال حاضر هیچ کد تخفیفی در سیستم ثبت نشده است\\."
     else:
         for c in codes:
             act_symbol = "🟢 فعال" if c.is_active else "🔴 غیرفعال"
@@ -1671,9 +1691,9 @@ async def adm_discounts_menu(callback: CallbackQuery, state: FSMContext):
             usr_restriction = f"مخصوص کاربر {c.specific_user_id}" if c.specific_user_id else "عمومی"
             
             txt += (
-                f"🎟 کد: <code>{c.code}</code> ({act_symbol})\n"
-                f"▫️ نوع: {type_label} | مقدار: **{val_label}**\n"
-                f"▫️ استفاده: {limit_lbl} بار | تخصیص: **{usr_restriction}**\n\n"
+                f"🎟 کد: `{escape_md_code(c.code)}` \\({escape_md(act_symbol)}\\)\n"
+                f"▫️ نوع: {escape_md(type_label)} | مقدار: *{escape_md(val_label)}*\n"
+                f"▫️ استفاده: {escape_md(limit_lbl)} بار | تخصیص: *{escape_md(usr_restriction)}*\n\n"
             )
             
     kb = [
@@ -1682,7 +1702,7 @@ async def adm_discounts_menu(callback: CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text="🔙 بازگشت به پنل ادمین", callback_data="btn_admin_panel")]
     ]
     
-    await safe_edit(callback.message, txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
+    await safe_edit(callback.message, txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="MarkdownV2")
     await callback.answer()
 
 @router.callback_query(F.data == "adm_discount_create_init")
@@ -1691,7 +1711,8 @@ async def adm_discount_create_init(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id not in config["ADMIN_IDS"]: return
     
     await callback.message.edit_text(
-        "🎟 **مرحله ۱:** لطفاً کد تخفیف انحصاری را وارد کنید (فقط حروف و اعداد انگلیسی بدون خط فاصله):\n\nمثال: `OFF30`"
+        "🎟 *مرحله ۱:* لطفاً کد تخفیف انحصاری را وارد کنید \\(فقط حروف و اعداد انگلیسی بدون خط فاصله\\):\n\nمثال: `OFF30`",
+        parse_mode="MarkdownV2"
     )
     await state.set_state(AdminStates.waiting_for_dc_code)
     await callback.answer()
@@ -1701,12 +1722,12 @@ async def process_dc_code_step(message: Message, state: FSMContext):
     """Processes promocode text and asks code type choice."""
     code_str = message.text.strip().upper()
     if not re.match(r"^[A-Z0-9]{3,15}$", code_str):
-        return await message.reply("❌ خطا: کد تخفیف فقط باید شامل حروف انگلیسی و اعداد بین ۳ تا ۱۵ کاراکتر باشد. مجدداً وارد کنید:")
+        return await message.reply("❌ خطا: کد تخفیف فقط باید شامل حروف انگلیسی و اعداد بین ۳ تا ۱۵ کاراکتر باشد\\. مجدداً وارد کنید:", parse_mode="MarkdownV2")
         
     with SessionLocal() as db:
         existing = db.query(DBDiscountCode).filter(DBDiscountCode.code == code_str).first()
         if existing:
-            return await message.reply("❌ خطا: این کد تخفیف قبلاً در دیتابیس تعریف شده است. لطفا یک کد دیگر وارد کنید:")
+            return await message.reply("❌ خطا: این کد تخفیف قبلاً در دیتابیس تعریف شده است\\. لطفا یک کد دیگر وارد کنید:", parse_mode="MarkdownV2")
             
     await state.update_data(new_dc_code=code_str)
     
@@ -1716,7 +1737,7 @@ async def process_dc_code_step(message: Message, state: FSMContext):
             InlineKeyboardButton(text="💵 کاهش مبلغ ثابت (Flat Amount)", callback_data="dc_set_type_amount")
         ]
     ])
-    await message.reply("🎟 **مرحله ۲:** نوع اعمال تخفیف را مشخص کنید:", reply_markup=kb)
+    await message.reply("🎟 *مرحله ۲:* نوع اعمال تخفیف را مشخص کنید:", reply_markup=kb, parse_mode="MarkdownV2")
     await state.set_state(AdminStates.waiting_for_dc_type)
 
 @router.callback_query(F.data.startswith("dc_set_type_"), AdminStates.waiting_for_dc_type)
@@ -1726,11 +1747,11 @@ async def process_dc_type_step(callback: CallbackQuery, state: FSMContext):
     await state.update_data(new_dc_type=selected_type)
     
     prompt = (
-        "🎟 **مرحله ۳:** درصد تخفیف را به صورت عددی بین ۱ تا ۱۰۰ (بدون % و انگلیسی) وارد کنید:"
+        "🎟 *مرحله ۳:* درصد تخفیف را به صورت عددی بین ۱ تا ۱۰۰ \\(بدون % و انگلیسی\\) وارد کنید:"
         if selected_type == "percent" else
-        "💵 **مرحله ۳:** مبلغ تخفیف نقدی را به **تومان** (انگلیسی) وارد کنید:"
+        "💵 *مرحله ۳:* مبلغ تخفیف نقدی را به *تومان* \\(انگلیسی\\) وارد کنید:"
     )
-    await callback.message.edit_text(prompt)
+    await callback.message.edit_text(prompt, parse_mode="MarkdownV2")
     await state.set_state(AdminStates.waiting_for_dc_value)
     await callback.answer()
 
@@ -1739,17 +1760,17 @@ async def process_dc_value_step(message: Message, state: FSMContext):
     """Processes discount absolute values constraints."""
     val_str = message.text.strip()
     if not val_str.isdigit():
-        return await message.reply("❌ خطا: لطفاً مقدار را به صورت یک عدد عددی انگلیسی وارد کنید:")
+        return await message.reply("❌ خطا: لطفاً مقدار را به صورت یک عدد عددی انگلیسی وارد کنید:", parse_mode="MarkdownV2")
         
     val = float(val_str)
     state_data = await state.get_data()
     dc_type = state_data["new_dc_type"]
     
     if dc_type == "percent" and (val < 1 or val > 100):
-        return await message.reply("❌ خطا: درصد تخفیف حتماً باید یک عدد صحیح بین ۱ تا ۱۰۰ باشد. مجدداً وارد کنید:")
+        return await message.reply("❌ خطا: درصد تخفیف حتماً باید یک عدد صحیح بین ۱ تا ۱۰۰ باشد\\. مجدداً وارد کنید:", parse_mode="MarkdownV2")
         
     await state.update_data(new_dc_value=val)
-    await message.reply("🎟 **مرحله ۴:** حداکثر تعداد دفعات مجاز برای استفاده کل کاربران از این کد را به عدد انگلیسی وارد کنید:\n\nمثال: `100`")
+    await message.reply("🎟 *مرحله ۴:* حداکثر تعداد دفعات مجاز برای استفاده کل کاربران از این کد را به عدد انگلیسی وارد کنید:\n\nمثال: `100`", parse_mode="MarkdownV2")
     await state.set_state(AdminStates.waiting_for_dc_limit)
 
 @router.message(AdminStates.waiting_for_dc_limit)
@@ -1757,14 +1778,14 @@ async def process_dc_limit_step(message: Message, state: FSMContext):
     """Processes total discount usages limit."""
     limit_str = message.text.strip()
     if not limit_str.isdigit():
-        return await message.reply("❌ خطا: لطفاً تعداد را به صورت عدد انگلیسی وارد کنید:")
+        return await message.reply("❌ خطا: لطفاً تعداد را به صورت عدد انگلیسی وارد کنید:", parse_mode="MarkdownV2")
         
     limit = int(limit_str)
     if limit < 1:
-        return await message.reply("❌ خطا: حداقل تعداد دفعات استفاده باید ۱ باشد. مجدداً وارد کنید:")
+        return await message.reply("❌ خطا: حداقل تعداد دفعات استفاده باید ۱ باشد\\. مجدداً وارد کنید:", parse_mode="MarkdownV2")
         
     await state.update_data(new_dc_limit=limit)
-    await message.reply("🎟 **مرحله ۵:** طول عمر و مدت اعتبار کد تخفیف را به **روز** وارد نمایید (مثلا عدد `7` برای اعتبار یک هفته‌ای. جهت بی‌محدودیت بودن عدد `0` بفرستید):")
+    await message.reply("🎟 *مرحله ۵:* طول عمر و مدت اعتبار کد تخفیف را به *روز* وارد نمایید \\(مثلا عدد `7` برای اعتبار یک هفته‌ای\\. جهت بی‌محدودیت بودن عدد `0` بفرستید\\):", parse_mode="MarkdownV2")
     await state.set_state(AdminStates.waiting_for_dc_expiry)
 
 @router.message(AdminStates.waiting_for_dc_expiry)
@@ -1772,14 +1793,15 @@ async def process_dc_expiry_step(message: Message, state: FSMContext):
     """Processes discount expiration dates."""
     days_str = message.text.strip()
     if not days_str.isdigit():
-        return await message.reply("❌ خطا: طول عمر اعتبار را به صورت عدد عددی انگلیسی وارد کنید:")
+        return await message.reply("❌ خطا: طول عمر اعتبار را به صورت عدد عددی انگلیسی وارد کنید:", parse_mode="MarkdownV2")
         
     days = int(days_str)
     await state.update_data(new_dc_expiry_days=days)
     
     await message.reply(
-        "🎟 **مرحله ۶:** آیا مایلید این کد تخفیف را مخصوص یک کاربر خاص (با آیدی عددی او) تعریف کنید؟\n\n"
-        "_(جهت ساخت کد عمومی عدد `0` را ارسال کنید و در غیر این صورت آیدی عددی تلگرام کاربر هدف را بفرستید)_"
+        "🎟 *مرحله ۶:* آیا مایلید این کد تخفیف را مخصوص یک کاربر خاص \\(با آیدی عددی او\\) تعریف کنید؟\n\n"
+        "\\_(جهت ساخت کد عمومی عدد `0` را ارسال کنید و در غیر این صورت آیدی عددی تلگرام کاربر هدف را بفرستید\\)_",
+        parse_mode="MarkdownV2"
     )
     await state.set_state(AdminStates.waiting_for_dc_user_restriction)
 
@@ -1788,7 +1810,7 @@ async def process_dc_final_save_step(message: Message, state: FSMContext):
     """Completes and persists newly defined discount codes."""
     user_restrict_str = message.text.strip()
     if not user_restrict_str.isdigit():
-        return await message.reply("❌ خطا: لطفاً آیدی عددی معتبر یا عدد ۰ بفرستید:")
+        return await message.reply("❌ خطا: لطفاً آیدی عددی معتبر یا عدد ۰ بفرستید:", parse_mode="MarkdownV2")
         
     target_uid = int(user_restrict_str)
     state_data = await state.get_data()
@@ -1821,10 +1843,11 @@ async def process_dc_final_save_step(message: Message, state: FSMContext):
         db.commit()
         
     await message.reply(
-        f"✅ کد تخفیف `{code}` با موفقیت ایجاد و فعال گردید.",
+        f"✅ کد تخفیف `{escape_md_code(code)}` با موفقیت ایجاد و فعال گردید\\.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔙 بازگشت به منوی کدهای تخفیف", callback_data="adm_discounts_menu")]
-        ])
+        ]),
+        parse_mode="MarkdownV2"
     )
     await state.clear()
 
@@ -1837,7 +1860,7 @@ async def adm_discount_delete_init(callback: CallbackQuery):
         codes = db.query(DBDiscountCode).filter(DBDiscountCode.is_active == True).all()
         
     if not codes:
-        return await callback.answer("⚠️ در حال حاضر هیچ کد تخفیف فعالی جهت حذف وجود ندارد.", show_alert=True)
+        return await callback.answer("⚠️ در حال حاضر هیچ کد تخفیف فعالی جهت حذف وجود ندارد\\.", show_alert=True)
         
     kb = []
     for c in codes:
@@ -1859,7 +1882,7 @@ async def process_dc_deletion_confirmed(callback: CallbackQuery):
             db.delete(dc)
             db.commit()
             
-    await callback.answer("✅ کد تخفیف با موفقیت حذف گردید.", show_alert=True)
+    await callback.answer("✅ کد تخفیف با موفقیت حذف گردید\\.", show_alert=True)
     await adm_discounts_menu(callback, FSMContext)
 
 # ---------------------------------------------------------------------------
@@ -1873,7 +1896,7 @@ async def adm_download_config_json_callback(callback: CallbackQuery):
     try:
         doc = FSInputFile(path=CONFIG_PATH, filename="reseller_config.json")
         await bot.send_document(chat_id=callback.from_user.id, document=doc, caption="📂 فایل کامل تنظیمات و پیکربندی ربات")
-        await callback.answer("✅ فایل پیکربندی ارسال شد.")
+        await callback.answer("✅ فایل پیکربندی ارسال شد\\.")
     except Exception as e:
         await callback.answer(f"❌ خطا در ارسال فایل: {e}", show_alert=True)
 
@@ -1883,12 +1906,13 @@ async def adm_upload_config_json_callback(callback: CallbackQuery, state: FSMCon
     if callback.from_user.id not in config["ADMIN_IDS"]: return
     
     await callback.message.edit_text(
-        "📤 **آپلود مستقیم فایل جدید reseller_config.json**\n\n"
+        "📤 *آپلود مستقیم فایل جدید reseller_config.json*\n\n"
         "لطفاً فایل متنی جدید تنظیمات خود را با پسوند `.json` در همین بخش ارسال نمایید:\n"
-        "⚠️ هشدار: قالب کلیدها باید دقیقاً مشابه نمونه اصلی باشد.",
+        "⚠️ هشدار: قالب کلیدها باید دقیقاً مشابه نمونه اصلی باشد\\.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔙 انصراف", callback_data="btn_admin_panel")]
-        ])
+        ]),
+        parse_mode="MarkdownV2"
     )
     await state.set_state(AdminStates.waiting_for_config_json_upload)
     await callback.answer()
@@ -1898,9 +1922,9 @@ async def process_config_json_upload_save(message: Message, state: FSMContext):
     """Validates uploaded configuration structure and applies overrides."""
     doc: Document = message.document
     if not doc.file_name.endswith(".json"):
-        return await message.reply("❌ خطا: فایل ارسالی باید دارای پسوند معتبر .json باشد.")
+        return await message.reply("❌ خطا: فایل ارسالی باید دارای پسوند معتبر .json باشد\\.", parse_mode="MarkdownV2")
         
-    await message.reply("⏳ در حال دریافت و اعتبارسنجی ساختار فایل پیکربندی...")
+    await message.reply("⏳ در حال دریافت و اعتبارسنجی ساختار فایل پیکربندی\\.\\.\\.", parse_mode="MarkdownV2")
     
     try:
         file_info = await bot.get_file(doc.file_id)
@@ -1911,7 +1935,7 @@ async def process_config_json_upload_save(message: Message, state: FSMContext):
         required_keys = ["BOT_TOKEN", "ADMIN_IDS", "API_KEY", "API_BASE_URL", "CARD_NUMBER", "CARD_HOLDER"]
         missing_keys = [k for k in required_keys if k not in parsed_data]
         if missing_keys:
-            return await message.reply(f"❌ خطا در قالب‌بندی: برخی از متغیرهای اصلی پیکربندی در فایل شما یافت نشد.\nمتغیرهای مفقود شده: `{', '.join(missing_keys)}`")
+            return await message.reply(f"❌ خطا در قالب‌بندی: برخی از متغیرهای اصلی پیکربندی در فایل شما یافت نشد\\.\nمتغیرهای مفقود شده: `{escape_md_code(', '.join(missing_keys))}`", parse_mode="MarkdownV2")
             
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(parsed_data, f, indent=4, ensure_ascii=False)
@@ -1921,10 +1945,11 @@ async def process_config_json_upload_save(message: Message, state: FSMContext):
         
         await state.clear()
         await message.reply(
-            "✅ فایل جدید پیکربندی ربات با موفقیت جایگزین شد و تغییرات بلافاصله روی ربات اعمال گردید.",
+            "✅ فایل جدید پیکربندی ربات با موفقیت جایگزین شد و تغییرات بلافاصله روی ربات اعمال گردید\\.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🔙 بازگشت به پنل مدیریت", callback_data="btn_admin_panel")]
-            ])
+            ]),
+            parse_mode="MarkdownV2"
         )
     except Exception as e:
         await message.reply(f"❌ خطا در پردازش یا تجزیه ساختار فایل تنظیمات ارسالی: {e}")
@@ -1938,7 +1963,7 @@ async def adm_edit_config_menu(callback: CallbackQuery):
     if callback.from_user.id not in config["ADMIN_IDS"]: return
     
     txt = (
-        "⚙️ **تنظیمات و پیکربندی متغیرهای سیستم**\n\n"
+        "⚙️ *تنظیمات و پیکربندی متغیرهای سیستم*\n\n"
         "یکی از متغیرهای زیر را جهت ویرایش انتخاب کنید:"
     )
     
@@ -1955,7 +1980,7 @@ async def adm_edit_config_menu(callback: CallbackQuery):
         [InlineKeyboardButton(text="🔙 بازگشت به پنل مدیریت", callback_data="btn_admin_panel")]
     ]
     
-    await safe_edit(callback.message, txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
+    await safe_edit(callback.message, txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="MarkdownV2")
     await callback.answer()
 
 @router.callback_query(F.data.startswith("cfg_edit_"))
@@ -1966,13 +1991,13 @@ async def adm_cfg_edit_key(callback: CallbackQuery, state: FSMContext):
     current_val = config.get(key, "تعریف نشده")
     
     await callback.message.edit_text(
-        f"✏️ **ویرایش متغیر: {key}**\n\n"
-        f"مقدار فعلی: `{current_val}`\n\n"
+        f"✏️ *ویرایش متغیر: {escape_md(key)}*\n\n"
+        f"مقدار فعلی: `{escape_md_code(str(current_val))}`\n\n"
         "لطفاً مقدار جدید را ارسال نمایید:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔙 انصراف", callback_data="adm_edit_config_menu")]
         ]),
-        parse_mode="Markdown"
+        parse_mode="MarkdownV2"
     )
     await state.set_state(AdminStates.waiting_for_config_key_value)
     await callback.answer()
@@ -1988,7 +2013,7 @@ async def process_cfg_key_value_save(message: Message, state: FSMContext):
         try:
             config[key] = int(val_str)
         except ValueError:
-            return await message.reply("❌ خطا: آیدی کانال حتما باید به صورت یک عدد علامت‌دار (مانند 100123456789-) وارد شود.")
+            return await message.reply("❌ خطا: آیدی کانال حتما باید به صورت یک عدد علامت‌دار (مانند -100123456789) وارد شود\\.", parse_mode="MarkdownV2")
     else:
         config[key] = val_str
         
@@ -1996,10 +2021,11 @@ async def process_cfg_key_value_save(message: Message, state: FSMContext):
     await state.clear()
     
     await message.reply(
-        f"✅ متغیر `{key}` با موفقیت ویرایش گردید و ثبت شد.",
+        f"✅ متغیر `{escape_md_code(key)}` با موفقیت ویرایش گردید و ثبت شد\\.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔙 بازگشت به منوی تنظیمات", callback_data="adm_edit_config_menu")]
-        ])
+        ]),
+        parse_mode="MarkdownV2"
     )
 
 # ---------------------------------------------------------------------------
@@ -2012,9 +2038,9 @@ async def adm_manage_texts_menu(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     
     txt = (
-        "📝 **مدیریت و ویرایش متون و پیام‌های ربات**\n\n"
+        "📝 *مدیریت و ویرایش متون و پیام‌های ربات*\n\n"
         "شما می‌توانید پیام‌های سیستمی ربات را به صورت تکی ویرایش نمایید، "
-        "یا کل فایل پیام‌ها را به صورت JSON دانلود و پس از اعمال تغییرات دلخواه، آپلود کنید تا فوراً تغییر کند."
+        "یا کل فایل پیام‌ها را به صورت JSON دانلود و پس از اعمال تغییرات دلخواه، آپلود کنید تا فوراً تغییر کند\\."
     )
     
     kb = [
@@ -2029,7 +2055,7 @@ async def adm_manage_texts_menu(callback: CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text="🔙 بازگشت به پنل مدیریت", callback_data="btn_admin_panel")]
     ]
     
-    await safe_edit(callback.message, txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
+    await safe_edit(callback.message, txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="MarkdownV2")
     await callback.answer()
 
 @router.callback_query(F.data.startswith("txt_edit_"))
@@ -2040,14 +2066,14 @@ async def adm_txt_edit_key(callback: CallbackQuery, state: FSMContext):
     current_val = bot_texts.get(key, DEFAULT_TEXTS.get(key, "تعریف نشده"))
     
     await callback.message.edit_text(
-        f"✏️ **ویرایش متن سیستمی: {key}**\n\n"
-        f"مقدار فعلی:\n`{current_val}`\n\n"
+        f"✏️ *ویرایش متن سیستمی: {escape_md(key)}*\n\n"
+        f"مقدار فعلی:\n`{escape_md_code(str(current_val))}`\n\n"
         "لطفاً متن جدید را تایپ و ارسال کنید:\n"
-        "_(دقت کنید متغیرهایی مانند `{balance}`، `{amount}` و... در صورت وجود دست‌نخورده باقی بمانند)_",
+        "\\_(دقت کنید متغیرهایی مانند `{balance}`، `{amount}` و... در صورت وجود دست\\-نخورده باقی بمانند\\)_",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔙 انصراف", callback_data="adm_manage_texts_menu")]
         ]),
-        parse_mode="Markdown"
+        parse_mode="MarkdownV2"
     )
     await state.set_state(AdminStates.waiting_for_text_key_value)
     await callback.answer()
@@ -2064,10 +2090,11 @@ async def process_txt_key_value_save(message: Message, state: FSMContext):
     await state.clear()
     
     await message.reply(
-        f"✅ پیام مربوط به متغیر `{key}` با موفقیت ویرایش و ثبت شد.",
+        f"✅ پیام مربوط به متغیر `{escape_md_code(key)}` با موفقیت ویرایش و ثبت شد\\.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔙 بازگشت به مدیریت متون", callback_data="adm_manage_texts_menu")]
-        ])
+        ]),
+        parse_mode="MarkdownV2"
     )
 
 @router.callback_query(F.data == "txt_download_json")
@@ -2081,7 +2108,7 @@ async def txt_download_json_callback(callback: CallbackQuery):
     try:
         doc = FSInputFile(path=TEXTS_PATH, filename="reseller_texts.json")
         await bot.send_document(chat_id=callback.from_user.id, document=doc, caption="📂 فایل کامل متون و پیام‌های سیستمی ربات")
-        await callback.answer("✅ فایل متون ارسال شد.")
+        await callback.answer("✅ فایل متون ارسال شد\\.")
     except Exception as e:
         await callback.answer(f"❌ خطا در ارسال فایل: {e}", show_alert=True)
 
@@ -2091,12 +2118,13 @@ async def txt_upload_json_callback(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id not in config["ADMIN_IDS"]: return
     
     await callback.message.edit_text(
-        "📤 **آپلود مستقیم فایل reseller_texts.json**\n\n"
+        "📤 *آپلود مستقیم فایل reseller_texts.json*\n\n"
         "لطفاً فایل متنی جدید خود را با فرمت `.json` و با نام ترجیحی `reseller_texts.json` در همین بخش ارسال نمایید:\n"
-        "⚠️ هشدار: ساختار کلیدها باید دقیقاً مشابه نمونه اصلی باشد.",
+        "⚠️ هشدار: ساختار کلیدها باید دقیقاً مشابه نمونه اصلی باشد\\.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔙 انصراف", callback_data="adm_manage_texts_menu")]
-        ])
+        ]),
+        parse_mode="MarkdownV2"
     )
     await state.set_state(AdminStates.waiting_for_texts_json_upload)
     await callback.answer()
@@ -2106,9 +2134,9 @@ async def process_texts_json_upload_save(message: Message, state: FSMContext):
     """Validates uploaded texts configuration and overwrites the active dictionary."""
     doc: Document = message.document
     if not doc.file_name.endswith(".json"):
-        return await message.reply("❌ خطا: فایل ارسالی باید دارای پسوند معتبر .json باشد.")
+        return await message.reply("❌ خطا: فایل ارسالی باید دارای پسوند معتبر .json باشد\\.", parse_mode="MarkdownV2")
         
-    await message.reply("⏳ در حال دریافت و اعتبارسنجی فایل متون...")
+    await message.reply("⏳ در حال دریافت و اعتبارسنجی فایل متون\\.\\.\\.", parse_mode="MarkdownV2")
     
     try:
         file_info = await bot.get_file(doc.file_id)
@@ -2118,7 +2146,7 @@ async def process_texts_json_upload_save(message: Message, state: FSMContext):
         
         missing_keys = [k for k in DEFAULT_TEXTS.keys() if k not in parsed_data]
         if missing_keys:
-            return await message.reply(f"❌ خطا در قالب‌بندی: برخی از کلیدهای پیش‌فرض ساختاری ربات در این فایل یافت نشدند.\nکلیدهای مفقوده: `{', '.join(missing_keys)}`")
+            return await message.reply(f"❌ خطا در قالب‌بندی: برخی از کلیدهای پیش‌فرض ساختاری ربات در این فایل یافت نشدند\\.\nکلیدهای مفقوده: `{escape_md_code(', '.join(missing_keys))}`", parse_mode="MarkdownV2")
             
         with open(TEXTS_PATH, "w", encoding="utf-8") as f:
             json.dump(parsed_data, f, indent=4, ensure_ascii=False)
@@ -2128,10 +2156,11 @@ async def process_texts_json_upload_save(message: Message, state: FSMContext):
         
         await state.clear()
         await message.reply(
-            "✅ فایل جدید متون با موفقیت جایگزین شد و تغییرات بلافاصله روی ربات اعمال گردید.",
+            "✅ فایل جدید متون با موفقیت جایگزین شد و تغییرات بلافاصله روی ربات اعمال گردید\\.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🔙 بازگشت به مدیریت متون", callback_data="adm_manage_texts_menu")]
-            ])
+            ]),
+            parse_mode="MarkdownV2"
         )
     except Exception as e:
         await message.reply(f"❌ خطا در پردازش یا تجزیه ساختار فایل متون ارسالی: {e}")
@@ -2146,7 +2175,7 @@ async def adm_toggle_maint(callback: CallbackQuery, state: FSMContext):
     config["MAINTENANCE_MODE"] = not config.get("MAINTENANCE_MODE", False)
     save_config_file()
     status_word = "فعال" if config["MAINTENANCE_MODE"] else "غیرفعال"
-    await callback.answer(f"🔧 وضعیت تعمیرات ربات {status_word} شد.", show_alert=True)
+    await callback.answer(f"🔧 وضعیت تعمیرات ربات {status_word} شد\\.", show_alert=True)
     await admin_panel_callback(callback, state)
 
 @router.callback_query(F.data == "adm_toggle_shop")
@@ -2156,7 +2185,7 @@ async def adm_toggle_shop(callback: CallbackQuery, state: FSMContext):
     config["SHOP_CLOSED"] = not config.get("SHOP_CLOSED", False)
     save_config_file()
     status_word = "بسته" if config["SHOP_CLOSED"] else "باز"
-    await callback.answer(f"🛒 فروشگاه {status_word} شد.", show_alert=True)
+    await callback.answer(f"🛒 فروشگاه {status_word} شد\\.", show_alert=True)
     await admin_panel_callback(callback, state)
 
 # ---------------------------------------------------------------------------
@@ -2181,7 +2210,7 @@ async def download_users_csv(callback: CallbackQuery):
     
     try:
         await bot.send_document(chat_id=callback.from_user.id, document=doc, caption="📂 لیست کامل کاربران عضو ربات")
-        await callback.answer("✅ فایل با موفقیت صادر شد.")
+        await callback.answer("✅ فایل با موفقیت صادر شد\\.")
     except Exception as e:
         await callback.answer(f"❌ خطا در ارسال فایل: {e}", show_alert=True)
 
@@ -2204,7 +2233,7 @@ async def download_transactions_csv(callback: CallbackQuery):
     
     try:
         await bot.send_document(chat_id=callback.from_user.id, document=doc, caption="📂 لیست کامل تراکنش‌های ثبت شده")
-        await callback.answer("✅ فایل با موفقیت صادر شد.")
+        await callback.answer("✅ فایل با موفقیت صادر شد\\.")
     except Exception as e:
         await callback.answer(f"❌ خطا در ارسال فایل: {e}", show_alert=True)
 
@@ -2215,12 +2244,12 @@ async def download_db_binary(callback: CallbackQuery):
     
     db_file_path = "reseller_bot.db"
     if not os.path.exists(db_file_path):
-        return await callback.answer("❌ دیتابیس در مسیر جاری یافت نشد.", show_alert=True)
+        return await callback.answer("❌ دیتابیس در مسیر جاری یافت نشد\\.", show_alert=True)
         
     try:
         doc = FSInputFile(path=db_file_path, filename="reseller_bot.db")
         await bot.send_document(chat_id=callback.from_user.id, document=doc, caption="📂 دیتابیس باینری فعلی سیستم (SQLite)")
-        await callback.answer("✅ فایل دیتابیس با موفقیت ارسال شد.")
+        await callback.answer("✅ فایل دیتابیس با موفقیت ارسال شد\\.")
     except Exception as e:
         await callback.answer(f"❌ خطا در ارسال دیتابیس: {e}", show_alert=True)
 
@@ -2232,7 +2261,7 @@ async def download_db_sql_dump(callback: CallbackQuery):
     import sqlite3
     db_file_path = "reseller_bot.db"
     if not os.path.exists(db_file_path):
-        return await callback.answer("❌ دیتابیس یافت نشد.", show_alert=True)
+        return await callback.answer("❌ دیتابیس یافت نشد\\.", show_alert=True)
         
     try:
         conn = sqlite3.connect(db_file_path)
@@ -2245,7 +2274,7 @@ async def download_db_sql_dump(callback: CallbackQuery):
         doc = BufferedInputFile(sql_bytes, filename="reseller_bot_dump.sql")
         
         await bot.send_document(chat_id=callback.from_user.id, document=doc, caption="📂 بکاپ کامل ساختاری و داده‌ای SQL")
-        await callback.answer("✅ بکاپ SQL با موفقیت ارسال شد.")
+        await callback.answer("✅ بکاپ SQL با موفقیت ارسال شد\\.")
     except Exception as e:
         await callback.answer(f"❌ خطا در تولید بکاپ: {e}", show_alert=True)
 
@@ -2257,7 +2286,7 @@ async def adm_stats_callback(callback: CallbackQuery):
     """Queries and displays local database and central balance diagnostics."""
     if callback.from_user.id not in config["ADMIN_IDS"]: return
     
-    await callback.message.edit_text("⏳ در حال استخراج و تحلیل داده‌های مالی...")
+    await callback.message.edit_text("⏳ در حال استخراج و تحلیل داده‌های مالی\\.\\.\\.", parse_mode="MarkdownV2")
     
     res = api.get_balance()
     central_bal_text = "خطا در اتصال به وب‌سرویس"
@@ -2271,18 +2300,18 @@ async def adm_stats_callback(callback: CallbackQuery):
         user_balances_sum = sum(u.balance for u in db.query(DBUser).all())
         
     txt = (
-        "📊 **گزارش آمار و فرآیندهای مالی ربات**\n\n"
-        f"👥 کل کاربران عضو: **{total_users}** نفر\n"
-        f"🛠 کل سرویس‌های فعال: **{total_srv}** عدد\n"
-        f"⏳ فیش‌های معلق: **{total_pending}** عدد\n\n"
-        f"💳 مجموع موجودی کاربران: **{int(user_balances_sum):,}** تومان\n"
-        f"🔌 اعتبار تایید شده در وب‌سرویس اصلی: **{central_bal_text}**"
+        f"📊 *گزارش آمار و فرآیندهای مالی ربات*\n\n"
+        f"👥 کل کاربران عضو: *{total_users}* نفر\n"
+        f"🛠 کل سرویس‌های فعال: *{total_srv}* عدد\n"
+        f"⏳ فیش‌های معلق: *{total_pending}* عدد\n\n"
+        f"💳 مجموع موجودی کاربران: *{escape_md(f'{int(user_balances_sum):,}')}* تومان\n"
+        f"🔌 اعتبار تایید شده در وب‌سرویس اصلی: *{escape_md(central_bal_text)}*"
     )
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔙 بازگشت به پنل ادمین", callback_data="btn_admin_panel")]
     ])
-    await callback.message.edit_text(txt, reply_markup=kb, parse_mode="Markdown")
+    await callback.message.edit_text(txt, reply_markup=kb, parse_mode="MarkdownV2")
     await callback.answer()
 
 # ---------------------------------------------------------------------------
@@ -2293,22 +2322,22 @@ async def adm_central_bal_callback(callback: CallbackQuery):
     """Establishes transaction call on master API to query central reseller balance."""
     if callback.from_user.id not in config["ADMIN_IDS"]: return
     
-    await callback.message.edit_text("⏳ در حال استعلام تراز مالی وب‌سرویس...")
+    await callback.message.edit_text("⏳ در حال استعلام تراز مالی وب‌سرویس\\.\\.\\.", parse_mode="MarkdownV2")
     res = api.get_balance()
     if res and res.get("success"):
         bal = res.get("balance", 0)
         txt = (
-            "🔌 **موجودی حساب وب‌سرویس نماینده**\n\n"
-            f"موجودی فعلی حساب شما در پنل اصلی: **{int(bal):,}** تومان\n\n"
-            "تراکنش‌های خرید مستقیم از این اعتبار کسر می‌شود."
+            f"🔌 *موجودی حساب وب‌سرویس نماینده*\n\n"
+            f"موجودی فعلی حساب شما در پنل اصلی: *{escape_md(f'{int(bal):,}')}* تومان\n\n"
+            "تراکنش‌های خرید مستقیم از این اعتبار کسر می‌شود\\."
         )
     else:
-        txt = "❌ دریافت اطلاعات موجودی وب‌سرویس اصلی با خطا مواجه شد."
+        txt = "❌ دریافت اطلاعات موجودی وب‌سرویس اصلی با خطا مواجه شد\\."
         
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔙 بازگشت به پنل مدیریت", callback_data="btn_admin_panel")]
     ])
-    await safe_edit(callback.message, txt, reply_markup=kb, parse_mode="HTML")
+    await safe_edit(callback.message, txt, reply_markup=kb, parse_mode="MarkdownV2")
     await callback.answer()
 
 # ---------------------------------------------------------------------------
@@ -2326,16 +2355,16 @@ async def adm_view_users_callback(callback: CallbackQuery):
         total_users = db.query(DBUser).count()
         users = db.query(DBUser).order_by(desc(DBUser.id)).offset(offset).limit(limit).all()
         
-    txt = "👥 **لیست کاربران دیتابیس (صفحه‌بندی شده):**\n\n"
+    txt = "👥 *لیست کاربران دیتابیس \\(صفحه‌بندی شده\\):*\n\n"
     for u in users:
         with SessionLocal() as db:
             rank, _ = calculate_user_rank(db, u.id)
         status_symbol = "🟢" if u.is_active else "🔴"
-        ban_text = " [ مسدود شده ]" if u.is_banned else ""
-        txt += f"👤 {status_symbol} [{u.first_name or 'Unknown'}](tg://user?id={u.telegram_id}) (`{u.telegram_id}`){ban_text}\n"
-        txt += f"▫️ رتبه: **{rank}**\n"
-        txt += f"▫️ تراز حساب: **{int(u.balance):,}** تومان\n"
-        txt += f"▫️ پیوستن: {u.joined_at.strftime('%Y-%m-%d %H:%M')}\n\n"
+        ban_text = " \\[ مسدود شده \\]" if u.is_banned else ""
+        txt += f"👤 {status_symbol} [{escape_md(u.first_name or 'Unknown')}](tg://user?id={u.telegram_id}) \\(`{u.telegram_id}`\\){ban_text}\n"
+        txt += f"▫️ رتبه: *{escape_md(rank)}*\n"
+        txt += f"▫️ تراز حساب: *{escape_md(f'{int(u.balance):,}')}* تومان\n"
+        txt += f"▫️ پیوستن: {escape_md(u.joined_at.strftime('%Y-%m-%d %H:%M'))}\n\n"
             
     kb_nav = []
     if page > 0:
@@ -2346,7 +2375,7 @@ async def adm_view_users_callback(callback: CallbackQuery):
     kb = [kb_nav] if kb_nav else []
     kb.append([InlineKeyboardButton(text="🔙 بازگشت به پنل مدیریت", callback_data="btn_admin_panel")])
     
-    await callback.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
+    await callback.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="MarkdownV2")
     await callback.answer()
 
 # ---------------------------------------------------------------------------
@@ -2364,12 +2393,12 @@ async def adm_view_services_callback(callback: CallbackQuery):
         total_srv = db.query(DBService).count()
         services = db.query(DBService).order_by(desc(DBService.id)).offset(offset).limit(limit).all()
         
-    txt = "🛠 **لیست سرویس‌های خریداری شده:**\n\n"
+    txt = "🛠 *لیست سرویس‌های خریداری شده:*\n\n"
     for s in services:
-        txt += f"🖥 سرویس: **{s.name}** (ID: {s.service_id})\n"
+        txt += f"🖥 سرویس: *{escape_md(s.name)}* \\(ID: {s.service_id}\\)\n"
         txt += f"▫️ آیدی خریدار: `{s.user_id}`\n"
-        txt += f"▫️ کلید UUID:\n`{s.uuid}`\n"
-        txt += f"▫️ وضعیت: {s.status}\n\n"
+        txt += f"▫️ کلید UUID:\n`{escape_md_code(s.uuid)}`\n"
+        txt += f"▫️ وضعیت: {escape_md(s.status)}\n\n"
         
     kb_nav = []
     if page > 0:
@@ -2380,7 +2409,7 @@ async def adm_view_services_callback(callback: CallbackQuery):
     kb = [kb_nav] if kb_nav else []
     kb.append([InlineKeyboardButton(text="🔙 بازگشت به پنل مدیریت", callback_data="btn_admin_panel")])
     
-    await callback.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
+    await callback.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="MarkdownV2")
     await callback.answer()
 
 # ---------------------------------------------------------------------------
@@ -2398,14 +2427,14 @@ async def adm_view_txs_callback(callback: CallbackQuery):
         total_txs = db.query(DBTransaction).count()
         transactions = db.query(DBTransaction).order_by(desc(DBTransaction.id)).offset(offset).limit(limit).all()
         
-    txt = "💰 **گزارش تراکنش‌های مالی اخیر:**\n\n"
+    txt = "💰 *گزارش تراکنش‌های مالی اخیر:*\n\n"
     for t in transactions:
-        sign = "+" if t.amount > 0 else ""
-        txt += f"🔋 تراکنش: **{t.type}** (ID: {t.id})\n"
-        txt += f"▫️ مبلغ: **{sign}{int(t.amount):,}** تومان\n"
-        txt += f"▫️ وضعیت تراکنش: **{t.status}**\n"
-        txt += f"▫️ شرح: {t.description or '-'}\n"
-        txt += f"▫️ تاریخ: {t.date.strftime('%Y-%m-%d %H:%M')}\n\n"
+        sign = "\\+" if t.amount > 0 else ""
+        txt += f"🔋 تراکنش: *{escape_md(t.type)}* \\(ID: {t.id}\\)\n"
+        txt += f"▫️ مبلغ: *{sign}{escape_md(f'{int(t.amount):,}')}* تومان\n"
+        txt += f"▫️ وضعیت تراکنش: *{escape_md(t.status)}*\n"
+        txt += f"▫️ شرح: {escape_md(t.description or '-')}\n"
+        txt += f"▫️ تاریخ: {escape_md(t.date.strftime('%Y-%m-%d %H:%M'))}\n\n"
         
     kb_nav = []
     if page > 0:
@@ -2416,7 +2445,7 @@ async def adm_view_txs_callback(callback: CallbackQuery):
     kb = [kb_nav] if kb_nav else []
     kb.append([InlineKeyboardButton(text="🔙 بازگشت به پنل مدیریت", callback_data="btn_admin_panel")])
     
-    await callback.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
+    await callback.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="MarkdownV2")
     await callback.answer()
 
 # ---------------------------------------------------------------------------
@@ -2430,7 +2459,7 @@ async def admin_review_pending_callback(callback: CallbackQuery):
     with SessionLocal() as db:
         tx = db.query(DBTransaction).filter(DBTransaction.status == "pending").first()
         if not tx:
-            return await callback.message.edit_text("✅ تمام فیش‌های واریزی بررسی شده‌اند و در حال حاضر فیش جدیدی موجود نیست.", reply_markup=back_to_menu_keyboard())
+            return await callback.message.edit_text("✅ تمام فیش‌های واریزی بررسی شده‌اند و در حال حاضر فیش جدیدی موجود نیست\\.", reply_markup=back_to_menu_keyboard(), parse_mode="MarkdownV2")
             
         user = db.query(DBUser).get(tx.user_id)
         
@@ -2446,20 +2475,20 @@ async def admin_review_pending_callback(callback: CallbackQuery):
         await bot.send_photo(
             chat_id=callback.from_user.id,
             photo=tx.receipt_image_id,
-            caption=f"👤 کاربر: {user.first_name or ''} ({user.telegram_id})\n💵 مبلغ درخواستی: **{tx.amount:,}** تومان\n\nآیا این رسید معتبر است؟",
+            caption=f"👤 کاربر: {escape_md(user.first_name or '')} \\({user.telegram_id}\\)\n💵 مبلغ درخواستی: *{escape_md(f'{tx.amount:,}')}* تومان\n\nآیا این رسید معتبر است؟",
             reply_markup=kb,
-            parse_mode="Markdown"
+            parse_mode="MarkdownV2"
         )
         await callback.message.delete()
     else:
         await callback.message.edit_text(
-            f"👤 کاربر: {user.first_name or ''} ({user.telegram_id})\n"
-            f"💵 مبلغ: **{tx.amount:,}** تومان\n"
-            f"ℹ️ توضیحات: {tx.description or 'ندارد'}\n"
-            f"🔑 هش تراکنش: `{tx.tx_hash or 'ندارد'}`\n\n"
+            f"👤 کاربر: {escape_md(user.first_name or '')} \\({user.telegram_id}\\)\n"
+            f"💵 مبلغ: *{escape_md(f'{tx.amount:,}')}* تومان\n"
+            f"ℹ️ توضیحات: {escape_md(tx.description or 'ندارد')}\n"
+            f"🔑 هش تراکنش: `{escape_md_code(tx.tx_hash or 'ندارد')}`\n\n"
             "آیا مایل به تایید این واریزی بدون فیش تصویری هستید؟",
             reply_markup=kb,
-            parse_mode="Markdown"
+            parse_mode="MarkdownV2"
         )
     await callback.answer()
 
@@ -2475,7 +2504,7 @@ async def admin_decision_callback(callback: CallbackQuery):
     with SessionLocal() as db:
         tx = db.query(DBTransaction).get(tx_id)
         if not tx or tx.status != "pending":
-            return await callback.answer("⚠️ این فیش قبلاً تعیین تکلیف شده است.", show_alert=True)
+            return await callback.answer("⚠️ این فیش قبلاً تعیین تکلیف شده است\\.", show_alert=True)
             
         user = db.query(DBUser).get(tx.user_id)
         
@@ -2484,42 +2513,44 @@ async def admin_decision_callback(callback: CallbackQuery):
             user.balance += tx.amount
             db.commit()
             
-            await callback.answer("✅ تراکنش با موفقیت تایید شد و موجودی کاربر افزایش یافت.", show_alert=True)
+            await callback.answer("✅ تراکنش با موفقیت تایید شد و موجودی کاربر افزایش یافت\\.", show_alert=True)
             try:
                 await bot.send_message(
                     chat_id=user.telegram_id,
-                    text=f"✅ **...واریز کارت به کارت شما تایید شد!**\n\nمبلغ **{int(tx.amount):,}** تومان به کیف پول شما افزوده شد.\nموجودی فعلی شما: **{int(user.balance):,}** تومان"
+                    text=f"✅ *...واریز کارت به کارت شما تایید شد\\!*\n\nمبلغ *{escape_md(f'{int(tx.amount):,}')}* تومان به کیف پول شما افزوده شد\\.\nموجودی فعلی شما: *{escape_md(f'{int(user.balance):,}')}* تومان",
+                    parse_mode="MarkdownV2"
                 )
             except Exception:
                 pass
             
             try:
-                await callback.message.edit_caption(caption=f"✅ رسید به مبلغ {int(tx.amount):,} تومان توسط ادمین **تایید** شد.")
+                await callback.message.edit_caption(caption=f"✅ رسید به مبلغ {escape_md(f'{int(tx.amount):,}')} تومان توسط ادمین *تایید* شد\\.", parse_mode="MarkdownV2")
             except Exception:
-                await callback.message.edit_text(text=f"✅ رسید به مبلغ {int(tx.amount):,} تومان توسط ادمین **تایید** شد.")
+                await callback.message.edit_text(text=f"✅ رسید به مبلغ {escape_md(f'{int(tx.amount):,}')} تومان توسط ادمین *تایید* شد\\.", parse_mode="MarkdownV2")
 
             for admin_id in config["ADMIN_IDS"]:
                 if admin_id != callback.from_user.id:
                     try:
-                        await bot.send_message(chat_id=admin_id, text=f"💰 افزایش تراز تایید شده: کاربر {user.telegram_id} مبلغ {tx.amount:,} تومان دریافت کرد.")
+                        await bot.send_message(chat_id=admin_id, text=f"💰 افزایش تراز تایید شده: کاربر {user.telegram_id} مبلغ {tx.amount:,} تومان دریافت کرد\\.", parse_mode="MarkdownV2")
                     except Exception: pass
         else:
             tx.status = "rejected"
             db.commit()
             
-            await callback.answer("❌ تراکنش رد شد.", show_alert=True)
+            await callback.answer("❌ تراکنش رد شد\\.", show_alert=True)
             try:
                 await bot.send_message(
                     chat_id=user.telegram_id,
-                    text=f"❌ **تراکنش واریز شما تایید نشد!**\n\nدرخواست شارژ به مبلغ **{int(tx.amount):,}** تومان رد شد. در صورت نیاز با پشتیبانی در ارتباط باشید."
+                    text=f"❌ *تراکنش واریز شما تایید نشد\\!*\n\nدرخواست شارژ به مبلغ *{escape_md(f'{int(tx.amount):,}')}* تومان رد شد\\. در صورت نیاز با پشتیبانی در ارتباط باشید\\.",
+                    parse_mode="MarkdownV2"
                 )
             except Exception:
                 pass
                 
             try:
-                await callback.message.edit_caption(caption=f"❌ رسید به مبلغ {int(tx.amount):,} تومان توسط ادمین **رد** شد.")
+                await callback.message.edit_caption(caption=f"❌ رسید به مبلغ {escape_md(f'{int(tx.amount):,}')} تومان توسط ادمین *رد* شد\\.", parse_mode="MarkdownV2")
             except Exception:
-                await callback.message.edit_text(text=f"❌ رسید به مبلغ {int(tx.amount):,} تومان توسط ادمین **رد** شد.")
+                await callback.message.edit_text(text=f"❌ رسید به مبلغ {escape_md(f'{int(tx.amount):,}')} تومان توسط ادمین *رد* شد\\.", parse_mode="MarkdownV2")
 
 # ---------------------------------------------------------------------------
 # 12. Automated Scheduled Tasks (Backups)
@@ -2543,7 +2574,8 @@ async def backup_scheduler():
                         await bot.send_document(
                             chat_id=admin_id,
                             document=backup_file,
-                            caption=f"📂 **پشتیبان‌گیری خودکار پایگاه داده**\n📅 تاریخ ارسال: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                            caption=f"📂 *پشتیبان‌گیری خودکار پایگاه داده*\n📅 تاریخ ارسال: {escape_md(datetime.now().strftime('%Y-%m-%d %H:%M:%S'))}",
+                            parse_mode="MarkdownV2"
                         )
                     except Exception as e:
                         print(f"[Backup System] Error sending backup to admin {admin_id}: {e}")
