@@ -40,8 +40,19 @@ def setup_environment_and_install_dependencies():
         print("\nSetup completed. Relaunching script inside the virtual environment...")
         os.execv(venv_python, [venv_python] + sys.argv)
 
-# Trigger environmental setups
 setup_environment_and_install_dependencies()
+
+# Standard Library Imports
+import os
+import sys
+import json
+import re
+import asyncio
+import requests
+import getpass
+import logging
+from datetime import datetime
+from logging.handlers import RotatingFileHandler
 
 # Third-Party Library Imports
 from aiogram import Bot, Dispatcher, Router, F, BaseMiddleware
@@ -56,11 +67,9 @@ from colorama import init, Fore, Style
 from rich.console import Console
 from rich.panel import Panel
 
-# Initialize Colorama and Rich Console
 init(autoreset=True)
 console = Console()
 
-# Configure Rotating Logs
 log_handler = RotatingFileHandler("reseller_bot.log", maxBytes=10*1024*1024, backupCount=5, encoding="utf-8")
 logging.basicConfig(
     level=logging.INFO,
@@ -242,6 +251,13 @@ class DBTransaction(Base):
     date = Column(DateTime, default=datetime.utcnow)
     receipt_image_id = Column(String, nullable=True)
 
+class DBPlanOverride(Base):
+    """Allows administrators to customize titles and prices of Reseller API plans."""
+    __tablename__ = "plan_overrides"
+    plan_id = Column(Integer, primary_key=True)
+    custom_title = Column(String, nullable=True)
+    custom_price = Column(Float, nullable=True)
+
 Base.metadata.create_all(bind=engine)
 
 def get_or_create_db_user(session, tg_user):
@@ -356,6 +372,9 @@ class AdminStates(StatesGroup):
     waiting_for_broadcast = State()
     waiting_for_charge_userid = State()
     waiting_for_charge_amount = State()
+    waiting_for_plan_select = State()
+    waiting_for_plan_title = State()
+    waiting_for_plan_price = State()
 
 # ---------------------------------------------------------------------------
 # 5. Force Join Channel Verification Middleware
@@ -367,7 +386,6 @@ class ForceJoinMiddleware(BaseMiddleware):
         if not user:
             return await handler(event, data)
         
-        # Admins are exempt from joining constraints
         if user.id in config["ADMIN_IDS"]:
             return await handler(event, data)
             
@@ -400,7 +418,7 @@ dp.message.outer_middleware(ForceJoinMiddleware())
 dp.callback_query.outer_middleware(ForceJoinMiddleware())
 
 # ---------------------------------------------------------------------------
-# 6. Keyboards with New Telegram 10.0 Styles (Primary, Success, Danger)
+# 6. Keyboards
 # ---------------------------------------------------------------------------
 def main_menu_keyboard(tg_id):
     """Builds primary navigation interface featuring Telegram 10.0 button colors."""
@@ -561,11 +579,11 @@ async def process_receipt_photo(message: Message, state: FSMContext):
             logger.error(f"Error notifying admin {admin_id}: {e}")
 
 # ---------------------------------------------------------------------------
-# 9. Purchase Flow with Premium Styles
+# 9. Purchase Flow with Premium Styles & Override Plan Logic
 # ---------------------------------------------------------------------------
 @router.callback_query(F.data == "btn_buy_service")
 async def buy_service_callback(callback: CallbackQuery, state: FSMContext):
-    """Creates plan selection and schedules standard margin configuration."""
+    """Creates plan selection displaying overrides customized by administrators."""
     await state.clear()
     await callback.message.edit_text("⏳ در حال دریافت لیست پلن‌ها از سرور...")
     
@@ -578,11 +596,17 @@ async def buy_service_callback(callback: CallbackQuery, state: FSMContext):
         return await callback.message.edit_text("🛒 در حال حاضر پلن فعالی جهت فروش موجود نیست.", reply_markup=back_to_menu_keyboard())
         
     kb = []
-    for p in plans:
-        btn_txt = f"📦 {p['title']} - {int(p['price']):,} ت"
-        kb.append([InlineKeyboardButton(text=btn_txt, callback_data=f"buy_plan_{p['id']}_{int(p['price'])}")])
+    with SessionLocal() as db:
+        for p in plans:
+            # Check for customized pricing/titles overrides locally
+            override = db.query(DBPlanOverride).filter(DBPlanOverride.plan_id == p['id']).first()
+            p_title = override.custom_title if (override and override.custom_title) else p['title']
+            p_price = int(override.custom_price) if (override and override.custom_price is not None) else int(p['price'])
+            
+            btn_txt = f"📦 {p_title} - {p_price:,} ت"
+            kb.append([InlineKeyboardButton(text=btn_txt, callback_data=f"buy_plan_{p['id']}_{p_price}")])
+            
     kb.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="btn_main_menu")])
-    
     await callback.message.edit_text("🛒 لطفاً یکی از پلن‌های زیر را جهت خرید انتخاب کنید:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
     await callback.answer()
 
@@ -647,7 +671,7 @@ async def process_service_name(message: Message, state: FSMContext):
 
 @router.callback_query(F.data == "confirm_buy_final")
 async def confirm_buy_final_callback(callback: CallbackQuery, state: FSMContext):
-    """Requests account creation and balance deduction, then returns the credential URL."""
+    """Requests account creation and balance deduction, then returns the credential URL & Configs."""
     state_data = await state.get_data()
     plan_id = state_data.get("buy_plan_id")
     name = state_data.get("buy_service_name")
@@ -689,12 +713,19 @@ async def confirm_buy_final_callback(callback: CallbackQuery, state: FSMContext)
             db.commit()
             
             sub_link = res_data.get("sub_url", "")
+            configs_list = res_data.get("configs", [])
+            
             success_txt = (
                 "🎉 **خرید شما با موفقیت انجام شد!**\n\n"
                 f"🔗 **لینک اشتراک اختصاصی:**\n`{sub_link}`\n\n"
-                "جهت باز کردن پنل کاربری یا کپی خودکار از کلیدهای تعبیه شده در زیر استفاده فرمایید:"
             )
             
+            if configs_list:
+                success_txt += "🔌 **کانفیگ‌های اتصال مستقیم شما:**\n\n"
+                for index, cfg in enumerate(configs_list[:3]):
+                    success_txt += f"**کانفیگ {index+1}:**\n`{cfg}`\n\n"
+            
+            # 10.0 copy button integration
             kb_list = [
                 [InlineKeyboardButton(text="📋 کپی سریع لینک اشتراک", copy_text={"text": sub_link}, style="success")],
                 [InlineKeyboardButton(text="🔗 باز کردن حساب کاربری (مینی‌اپ)", url=sub_link, style="primary")],
@@ -703,13 +734,14 @@ async def confirm_buy_final_callback(callback: CallbackQuery, state: FSMContext)
             
             await callback.message.edit_text(success_txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_list), parse_mode="Markdown")
 
+            # Report purchase to Admins (Farsi report)
             admin_msg = (
-                f"🔔 **New Purchase Report**\n\n"
-                f"👤 Buyer: {user.first_name or 'Unknown'} ({user.telegram_id})\n"
-                f"📦 Plan: (ID: {plan_id})\n"
-                f"🖥 Service Name: `{name}`\n"
-                f"💵 Cost: **{price:,}** Tomans\n"
-                f"🔑 UUID: `{res_data.get('uuid')}`"
+                f"🔔 **گزارش خرید سرویس جدید**\n\n"
+                f"👤 خریدار: {user.first_name or 'نامشخص'} ({user.telegram_id})\n"
+                f"📦 پلن خریداری شده: (کد پلن: {plan_id})\n"
+                f"🖥 نام سرویس: `{name}`\n"
+                f"💵 قیمت پرداخت شده: **{price:,}** تومان\n"
+                f"🔑 شناسه (UUID): `{res_data.get('uuid')}`"
             )
             for admin_id in config["ADMIN_IDS"]:
                 try:
@@ -724,7 +756,7 @@ async def confirm_buy_final_callback(callback: CallbackQuery, state: FSMContext)
     await callback.answer()
 
 # ---------------------------------------------------------------------------
-# 9. Services List & Dynamic Clipboard Configs
+# 10. Services List & Dynamic 2-Row Column Layout Controls
 # ---------------------------------------------------------------------------
 @router.callback_query(F.data == "btn_my_services")
 async def my_services_callback(callback: CallbackQuery):
@@ -739,16 +771,22 @@ async def my_services_callback(callback: CallbackQuery):
         return await callback.message.edit_text("🌐 شما هیچ سرویس فعالی ثبت نکرده‌اید.", reply_markup=back_to_menu_keyboard())
         
     kb = []
+    row = []
     for s in services:
-        kb.append([InlineKeyboardButton(text=f"📡 {s.name or 'سرویس'} | {s.status}", callback_data=f"srv_view_{s.id}")])
+        row.append(InlineKeyboardButton(text=f"📡 {s.name or 'سرویس'}", callback_data=f"srv_view_{s.id}"))
+        if len(row) == 2:
+            kb.append(row)
+            row = []
+    if row:
+        kb.append(row)
+        
     kb.append([InlineKeyboardButton(text="🔙 بازگشت به منوی اصلی", callback_data="btn_main_menu")])
-    
     await callback.message.edit_text("🌐 لیست سرویس‌های ثبت شده شما:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
     await callback.answer()
 
 @router.callback_query(F.data.startswith("srv_view_"))
 async def srv_view_callback(callback: CallbackQuery):
-    """Presents detailed subscription analytics and native 10.0 copy actions."""
+    """Presents detailed subscription analytics with constrained admin-only toggle actions."""
     srv_id = int(callback.data.split("_")[2])
     
     with SessionLocal() as db:
@@ -767,8 +805,10 @@ async def srv_view_callback(callback: CallbackQuery):
             "⚠️ دریافت اطلاعات مصرف حجم لایو از سرور مقدور نبود."
         )
         kb = [
-            [InlineKeyboardButton(text="🔄 تلاش مجدد", callback_data=f"srv_view_{srv.id}", style="primary")],
-            [InlineKeyboardButton(text="🔙 بازگشت به لیست", callback_data="btn_my_services")]
+            [
+                InlineKeyboardButton(text="🔄 تلاش مجدد", callback_data=f"srv_view_{srv.id}", style="primary"),
+                InlineKeyboardButton(text="🔙 بازگشت به لیست", callback_data="btn_my_services")
+            ]
         ]
         return await callback.message.edit_text(detail_txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
         
@@ -796,34 +836,51 @@ async def srv_view_callback(callback: CallbackQuery):
         f"🔗 **لینک اشتراک:**\n`{sub_url}`"
     )
     
+    # Elegant 2-column inline keyboard setup
     kb = [
-        [InlineKeyboardButton(text="📋 کپی لینک اشتراک", copy_text={"text": sub_url}, style="success")],
-        [InlineKeyboardButton(text="📸 دریافت کد QR", callback_data=f"srv_qr_{srv_id}", style="primary")]
+        [
+            InlineKeyboardButton(text="📋 کپی لینک اشتراک", copy_text={"text": sub_url}, style="success"),
+            InlineKeyboardButton(text="📸 دریافت کد QR", callback_data=f"srv_qr_{srv_id}", style="primary")
+        ]
     ]
     
     if configs_list:
+        cfg_row = []
         for index, cfg in enumerate(configs_list[:2]):
             proto_label = "VLESS" if "vless://" in cfg else "VMESS" if "vmess://" in cfg else "Config"
-            kb.append([InlineKeyboardButton(text=f"📋 کپی کانفیگ {proto_label} {index+1}", copy_text={"text": cfg}, style="primary")])
+            cfg_row.append(InlineKeyboardButton(text=f"📋 کپی {proto_label} {index+1}", copy_text={"text": cfg}, style="primary"))
+            if len(cfg_row) == 2:
+                kb.append(cfg_row)
+                cfg_row = []
+        if cfg_row:
+            kb.append(cfg_row)
             
-    kb.append([InlineKeyboardButton(text="🔄 تمدید سرویس", callback_data=f"srv_renew_{srv_id}", style="success")])
-    toggle_txt = "🔴 غیرفعال کردن سرویس" if status == "active" else "🟢 فعال کردن سرویس"
-    kb.append([InlineKeyboardButton(text=toggle_txt, callback_data=f"srv_toggle_{srv_id}", style="danger")])
-    kb.append([InlineKeyboardButton(text="🔙 بازگشت به لیست", callback_data="btn_my_services")])
+    kb.append([
+        InlineKeyboardButton(text="🔄 تمدید سرویس", callback_data=f"srv_renew_{srv_id}", style="success"),
+        InlineKeyboardButton(text="🔙 بازگشت به لیست", callback_data="btn_my_services")
+    ])
     
+    # Administrative control restricted to admin accounts only
+    if callback.from_user.id in config["ADMIN_IDS"]:
+        toggle_txt = "🔴 غیرفعال کردن سرویس" if status == "active" else "🟢 فعال کردن سرویس"
+        kb.append([InlineKeyboardButton(text=toggle_txt, callback_data=f"srv_toggle_{srv_id}", style="danger")])
+        
     await callback.message.edit_text(detail_txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
     await callback.answer()
 
 @router.callback_query(F.data.startswith("srv_toggle_"))
 async def srv_toggle_callback(callback: CallbackQuery):
-    """Processes toggle state instruction and applies active switch on panel."""
+    """Updates active status of a service on the target panel (enable/disable) for admins."""
+    if callback.from_user.id not in config["ADMIN_IDS"]:
+        return await callback.answer("❌ دسترسی غیرمجاز: تنها مدیریت مجاز به قطع موقت سرویس‌ها می‌باشد.", show_alert=True)
+        
     srv_id = int(callback.data.split("_")[2])
     with SessionLocal() as db:
         srv = db.query(DBService).get(srv_id)
         if not srv: return
         
     action = "disable" if srv.status == "active" else "enable"
-    await callback.message.edit_text("⏳ در حال ارسال دستور به سرور...")
+    await callback.message.edit_text("⏳ در حال ارسال دستور تغییر وضعیت به سرور...")
     
     res = api.toggle_service(srv.service_id, action)
     if res and res.get("success"):
@@ -844,7 +901,7 @@ async def srv_qr_callback(callback: CallbackQuery):
     qr_data = srv.sub_url or f"{config['API_BASE_URL'].rstrip('/')}/sub/{srv.uuid}"
     qr_api_url = f"https://api.qrserver.com/v1/create-qr-code/?size=250x250&data={urllib.parse.quote(qr_data)}"
     
-    await callback.message.edit_text("⏳ در حال تولید کد QR...")
+    await callback.message.edit_text("⏳ در حال تولید کد QR اختصاصی...")
     try:
         r = requests.get(qr_api_url, timeout=10)
         if r.status_code == 200:
@@ -856,9 +913,11 @@ async def srv_qr_callback(callback: CallbackQuery):
             )
             await callback.message.delete()
         else:
-            await callback.answer("❌ خطا در تولید عکس کد QR.", show_alert=True)
+            raise Exception("Non-200 Response from API")
     except Exception as e:
-        await callback.answer(f"❌ خطا: {e}", show_alert=True)
+        logger.error(f"Error creating QR code image: {e}")
+        await callback.answer("❌ خطا در ایجاد اتوماتیک عکس QR Code از سرور کمکی. لینک به صورت متن ارسال شد.", show_alert=True)
+        await callback.message.reply(f"🔗 **لینک اشتراک شما:**\n\n`{qr_data}`", parse_mode="Markdown")
 
 @router.callback_query(F.data.startswith("srv_renew_"))
 async def srv_renew_callback(callback: CallbackQuery):
@@ -872,10 +931,17 @@ async def srv_renew_callback(callback: CallbackQuery):
         
     plans = plans_data.get("plans", [])
     kb = []
-    for p in plans:
-        kb.append([InlineKeyboardButton(text=f"🔄 تمدید با {p['title']} - {int(p['price']):,} ت", callback_data=f"renew_confirm_{srv_id}_{p['id']}_{int(p['price'])}")])
-    kb.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"srv_view_{srv_id}")])
     
+    with SessionLocal() as db:
+        for p in plans:
+            # Plan Overrides price logic
+            override = db.query(DBPlanOverride).filter(DBPlanOverride.plan_id == p['id']).first()
+            p_title = override.custom_title if (override and override.custom_title) else p['title']
+            p_price = int(override.custom_price) if (override and override.custom_price is not None) else int(p['price'])
+            
+            kb.append([InlineKeyboardButton(text=f"🔄 تمدید با {p_title} - {p_price:,} ت", callback_data=f"renew_confirm_{srv_id}_{p['id']}_{p_price}")])
+            
+    kb.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"srv_view_{srv_id}")])
     await callback.message.edit_text("🔄 یکی از پلن‌های زیر را جهت تمدید این سرویس انتخاب کنید:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
     await callback.answer()
 
@@ -915,11 +981,12 @@ async def renew_confirm_callback(callback: CallbackQuery):
             
         await callback.answer("🎉 سرویس شما با موفقیت تمدید شد!", show_alert=True)
 
+        # Farsi report for renewal
         admin_msg = (
-            f"🔄 **Service Renewal Report**\n\n"
-            f"👤 User: {db_user.first_name or 'Unknown'} ({db_user.telegram_id})\n"
-            f"🖥 Service: `{srv.name}` (ID: {srv.service_id})\n"
-            f"💵 Cost: **{price:,}** Tomans"
+            f"🔄 **گزارش تمدید سرویس**\n\n"
+            f"👤 کاربر: {db_user.first_name or 'نامشخص'} ({db_user.telegram_id})\n"
+            f"🖥 سرویس: `{srv.name}` (کد سرویس: {srv.service_id})\n"
+            f"💵 هزینه تمدید: **{price:,}** تومان"
         )
         for admin_id in config["ADMIN_IDS"]:
             try:
@@ -933,7 +1000,7 @@ async def renew_confirm_callback(callback: CallbackQuery):
     await srv_view_callback(callback)
 
 # ---------------------------------------------------------------------------
-# 10. Admin Panel Functions (Broadcasting, Pagination, Custom Charge)
+# 11. Admin Panel Functions (Broadcasting, Pagination, Custom Charge, Overrides)
 # ---------------------------------------------------------------------------
 @router.callback_query(F.data == "btn_admin_panel")
 async def admin_panel_callback(callback: CallbackQuery, state: FSMContext):
@@ -953,10 +1020,22 @@ async def admin_panel_callback(callback: CallbackQuery, state: FSMContext):
     )
     
     kb = [
-        [InlineKeyboardButton(text="📢 ارسال پیام همگانی (Broadcast)", callback_data="adm_broadcast", style="primary")],
-        [InlineKeyboardButton(text="👥 لیست کاربران دیتابیس", callback_data="adm_view_users_0"), InlineKeyboardButton(text="🛠 لیست سرویس‌ها", callback_data="adm_view_services_0")],
-        [InlineKeyboardButton(text="💰 لیست تراکنش‌ها", callback_data="adm_view_txs_0"), InlineKeyboardButton(text="💳 تغییر دستی موجودی", callback_data="adm_charge_user")],
-        [InlineKeyboardButton(text="🔌 استعلام موجودی وب‌سرویس اصلی", callback_data="adm_central_bal", style="primary")],
+        [
+            InlineKeyboardButton(text="📢 ارسال پیام همگانی (Broadcast)", callback_data="adm_broadcast", style="primary"),
+            InlineKeyboardButton(text="📊 آمار سیستم (Stats)", callback_data="adm_stats", style="success")
+        ],
+        [
+            InlineKeyboardButton(text="👥 لیست کاربران دیتابیس", callback_data="adm_view_users_0"), 
+            InlineKeyboardButton(text="🛠 لیست سرویس‌ها", callback_data="adm_view_services_0")
+        ],
+        [
+            InlineKeyboardButton(text="💰 لیست تراکنش‌ها", callback_data="adm_view_txs_0"), 
+            InlineKeyboardButton(text="💳 تغییر دستی موجودی", callback_data="adm_charge_user")
+        ],
+        [
+            InlineKeyboardButton(text="✏️ شخصی‌سازی قیمت پلن‌ها", callback_data="adm_plan_customize_menu", style="primary"),
+            InlineKeyboardButton(text="🔌 استعلام موجودی وب‌سرویس اصلی", callback_data="adm_central_bal")
+        ],
     ]
     if pending_txs:
         kb.insert(0, [InlineKeyboardButton(text="✍️ بررسی فیش‌های در انتظار", callback_data="btn_admin_review_pending", style="success")])
@@ -965,6 +1044,43 @@ async def admin_panel_callback(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
     await callback.answer()
 
+# 11.1 Stats Panel
+@router.callback_query(F.data == "adm_stats")
+async def adm_stats_callback(callback: CallbackQuery):
+    """Queries and displays local database and central balance diagnostics."""
+    if callback.from_user.id not in config["ADMIN_IDS"]: return
+    
+    await callback.message.edit_text("⏳ در حال استخراج و تحلیل داده‌های مالی...")
+    
+    res = api.get_balance()
+    central_bal_text = "خطا در اتصال به وب‌سرویس"
+    if res and res.get("success"):
+        central_bal_text = f"{int(res.get('balance', 0)):,} تومان"
+        
+    with SessionLocal() as db:
+        total_users = db.query(DBUser).count()
+        total_srv = db.query(DBService).count()
+        total_pending = db.query(DBTransaction).filter(DBTransaction.status == "pending").count()
+        
+        # Calculate sum of all user balances
+        user_balances_sum = sum(u.balance for u in db.query(DBUser).all())
+        
+    txt = (
+        "📊 **گزارش آمار و فرآیندهای مالی ربات**\n\n"
+        f"👥 کل کاربران عضو: **{total_users}** نفر\n"
+        f"🛠 کل سرویس‌های فعال: **{total_srv}** عدد\n"
+        f"⏳ فیش‌های معلق: **{total_pending}** عدد\n\n"
+        f"💳 مجموع موجودی کاربران: **{int(user_balances_sum):,}** تومان\n"
+        f"🔌 اعتبار تایید شده در وب‌سرویس اصلی: **{central_bal_text}**"
+    )
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 بازگشت به پنل ادمین", callback_data="btn_admin_panel")]
+    ])
+    await callback.message.edit_text(txt, reply_markup=kb, parse_mode="Markdown")
+    await callback.answer()
+
+# 11.2 Central API Balance Check
 @router.callback_query(F.data == "adm_central_bal")
 async def adm_central_bal_callback(callback: CallbackQuery):
     """Establishes transaction call on master API to query central reseller balance."""
@@ -988,6 +1104,111 @@ async def adm_central_bal_callback(callback: CallbackQuery):
     await callback.message.edit_text(txt, reply_markup=kb, parse_mode="Markdown")
     await callback.answer()
 
+# 11.3 Plan Customization (Overrides) Menu
+@router.callback_query(F.data == "adm_plan_customize_menu")
+async def adm_plan_customize_menu(callback: CallbackQuery, state: FSMContext):
+    """Presents existing plans from central server to override title or price."""
+    if callback.from_user.id not in config["ADMIN_IDS"]: return
+    await callback.message.edit_text("⏳ در حال بارگذاری لیست پلن‌های فعال...")
+    
+    plans_data = api.get_plans()
+    if not plans_data or not plans_data.get("success"):
+        return await callback.message.edit_text("❌ خطا در دریافت پلن‌ها از سرور.", reply_markup=back_to_menu_keyboard())
+        
+    plans = plans_data.get("plans", [])
+    kb = []
+    
+    with SessionLocal() as db:
+        for p in plans:
+            override = db.query(DBPlanOverride).filter(DBPlanOverride.plan_id == p['id']).first()
+            p_title = override.custom_title if (override and override.custom_title) else p['title']
+            p_price = int(override.custom_price) if (override and override.custom_price is not None) else int(p['price'])
+            
+            btn_txt = f"📦 {p_title} ({p_price:,} ت)"
+            kb.append([InlineKeyboardButton(text=btn_txt, callback_data=f"adm_override_select_{p['id']}")])
+            
+    kb.append([InlineKeyboardButton(text="🔙 بازگشت به پنل ادمین", callback_data="btn_admin_panel")])
+    await callback.message.edit_text(
+        "✏️ پلنی که قصد تغییر مشخصات محلی (عنوان یا قیمت نهایی فروش) آن را دارید انتخاب کنید:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb)
+    )
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("adm_override_select_"))
+async def adm_override_select_callback(callback: CallbackQuery, state: FSMContext):
+    """Displays choices to modify either title or price of the selected plan."""
+    plan_id = int(callback.data.split("_")[3])
+    await state.update_data(target_plan_id=plan_id)
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✏️ تغییر عنوان پلن (Title)", callback_data="adm_over_title"),
+            InlineKeyboardButton(text="💵 تغییر قیمت فروش (Price)", callback_data="adm_over_price")
+        ],
+        [InlineKeyboardButton(text="🔙 بازگشت به لیست", callback_data="adm_plan_customize_menu")]
+    ])
+    await callback.message.edit_text(f"شما در حال ویرایش پلن (ID: {plan_id}) هستید. فیلد مورد نظر را انتخاب کنید:", reply_markup=kb)
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("adm_over_"))
+async def adm_over_fields_callback(callback: CallbackQuery, state: FSMContext):
+    """Prompts corresponding field change details from administrator."""
+    field = callback.data.split("_")[2]
+    if field == "title":
+        await callback.message.edit_text("✏️ عنوان جدید پلن را وارد کنید (مثال: `پلن برنزی ۳۰ گیگ`):", reply_markup=back_to_menu_keyboard(), parse_mode="Markdown")
+        await state.set_state(AdminStates.waiting_for_plan_title)
+    else:
+        await callback.message.edit_text("💵 قیمت جدید فروش به کاربران را به **تومان** وارد کنید (به صورت عدد انگلیسی):", reply_markup=back_to_menu_keyboard(), parse_mode="Markdown")
+        await state.set_state(AdminStates.waiting_for_plan_price)
+    await callback.answer()
+
+@router.message(AdminStates.waiting_for_plan_title)
+async def process_plan_title_override(message: Message, state: FSMContext):
+    """Saves customized title value inside local SQLite database."""
+    new_title = message.text.strip()
+    state_data = await state.get_data()
+    plan_id = state_data["target_plan_id"]
+    
+    with SessionLocal() as db:
+        override = db.query(DBPlanOverride).get(plan_id)
+        if not override:
+            override = DBPlanOverride(plan_id=plan_id, custom_title=new_title)
+            db.add(override)
+        else:
+            override.custom_title = new_title
+        db.commit()
+        
+    await message.reply("✅ عنوان پلن به صورت محلی ویرایش شد.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 بازگشت به منوی ویرایش پلن‌ها", callback_data="adm_plan_customize_menu")]
+    ]))
+    await state.clear()
+
+@router.message(AdminStates.waiting_for_plan_price)
+async def process_plan_price_override(message: Message, state: FSMContext):
+    """Saves customized price value inside local SQLite database."""
+    new_price_str = message.text.strip()
+    if not new_price_str.isdigit():
+        return await message.reply("❌ خطا: لطفاً مقدار عددی معتبری وارد کنید.")
+        
+    new_price = float(new_price_str)
+    state_data = await state.get_data()
+    plan_id = state_data["target_plan_id"]
+    
+    with SessionLocal() as db:
+        override = db.query(DBPlanOverride).get(plan_id)
+        if not override:
+            override = DBPlanOverride(plan_id=plan_id, custom_price=new_price)
+            db.add(override)
+        else:
+            override.custom_price = new_price
+        db.commit()
+        
+    await message.reply("✅ قیمت فروش پلن به صورت محلی ویرایش شد.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 بازگشت به منوی ویرایش پلن‌ها", callback_data="adm_plan_customize_menu")]
+    ]))
+    await state.clear()
+
+# 11.4 Manual User Recharge Flow
 @router.callback_query(F.data == "adm_charge_user")
 async def adm_charge_user_callback(callback: CallbackQuery, state: FSMContext):
     """Prompts target user Telegram identifier to process manual ledger changes."""
@@ -1074,7 +1295,7 @@ async def adm_process_charge_amount(message: Message, state: FSMContext):
         
     await state.clear()
 
-# 10.3 Broadcast System
+# 11.5 Broadcast System
 @router.callback_query(F.data == "adm_broadcast")
 async def adm_broadcast_callback(callback: CallbackQuery, state: FSMContext):
     """Sets FSM state to accept custom broad broadcast payload message."""
@@ -1120,7 +1341,7 @@ async def adm_process_broadcast(message: Message, state: FSMContext):
         ])
     )
 
-# 10.4 Paginated User List View
+# 11.6 Paginated User List View (2 Columns)
 @router.callback_query(F.data.startswith("adm_view_users_"))
 async def adm_view_users_callback(callback: CallbackQuery):
     """Renders local user records using modular offset paging."""
@@ -1131,27 +1352,25 @@ async def adm_view_users_callback(callback: CallbackQuery):
     
     with SessionLocal() as db:
         total_users = db.query(DBUser).count()
-        users = db.query(DBUser).order_by(desc(DBUser.id)).offset(offset).limit(limit).all()
+        txt = "👥 **لیست کاربران دیتابیس (صفحه‌بندی شده):**\n\n"
+        for u in users:
+            txt += f"👤 [{u.first_name or 'Unkown'}](tg://user?id={u.telegram_id}) (`{u.telegram_id}`)\n"
+            txt += f"▫️ تراز حساب: **{int(u.balance):,}** تومان\n"
+            txt += f"▫️ پیوستن: {u.joined_at.strftime('%Y-%m-%d %H:%M')}\n\n"
+            
+        kb_nav = []
+        if page > 0:
+            kb_nav.append(InlineKeyboardButton(text="⬅️ قبلی", callback_data=f"adm_view_users_{page - 1}"))
+        if offset + limit < total_users:
+            kb_nav.append(InlineKeyboardButton(text="بعدی ➡️", callback_data=f"adm_view_users_{page + 1}"))
+            
+        kb = [kb_nav] if kb_nav else []
+        kb.append([InlineKeyboardButton(text="🔙 بازگشت به پنل مدیریت", callback_data="btn_admin_panel")])
         
-    txt = "👥 **لیست کاربران دیتابیس (صفحه‌بندی شده):**\n\n"
-    for u in users:
-        txt += f"👤 [{u.first_name or 'Unkown'}](tg://user?id={u.telegram_id}) (`{u.telegram_id}`)\n"
-        txt += f"▫️ تراز حساب: **{int(u.balance):,}** تومان\n"
-        txt += f"▫️ پیوستن: {u.joined_at.strftime('%Y-%m-%d %H:%M')}\n\n"
-        
-    kb_nav = []
-    if page > 0:
-        kb_nav.append(InlineKeyboardButton(text="⬅️ قبلی", callback_data=f"adm_view_users_{page - 1}"))
-    if offset + limit < total_users:
-        kb_nav.append(InlineKeyboardButton(text="بعدی ➡️", callback_data=f"adm_view_users_{page + 1}"))
-        
-    kb = [kb_nav] if kb_nav else []
-    kb.append([InlineKeyboardButton(text="🔙 بازگشت به پنل مدیریت", callback_data="btn_admin_panel")])
-    
-    await callback.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
-    await callback.answer()
+        await callback.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
+        await callback.answer()
 
-# 10.5 Paginated Services List View
+# 11.7 Paginated Services List View (2 Columns)
 @router.callback_query(F.data.startswith("adm_view_services_"))
 async def adm_view_services_callback(callback: CallbackQuery):
     """Renders modular list of localized service registrations with offsets."""
@@ -1183,7 +1402,7 @@ async def adm_view_services_callback(callback: CallbackQuery):
     await callback.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
     await callback.answer()
 
-# 10.6 Paginated Transactions List View
+# 11.8 Paginated Transactions List View (2 Columns)
 @router.callback_query(F.data.startswith("adm_view_txs_"))
 async def adm_view_txs_callback(callback: CallbackQuery):
     """Loads and lists financial transaction ledgers with incremental pages."""
@@ -1217,7 +1436,7 @@ async def adm_view_txs_callback(callback: CallbackQuery):
     await callback.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
     await callback.answer()
 
-# 10.7 Pending Receipt Verification View
+# 11.9 Pending Receipt Verification View
 @router.callback_query(F.data == "btn_admin_review_pending")
 async def admin_review_pending_callback(callback: CallbackQuery):
     """Loads first active pending receipt photo and attaches verification inline."""
@@ -1301,7 +1520,7 @@ async def admin_decision_callback(callback: CallbackQuery):
             await callback.message.edit_caption(caption=f"❌ رسید به مبلغ {int(tx.amount):,} تومان توسط ادمین **رد** شد.")
 
 # ---------------------------------------------------------------------------
-# 11. Automated Scheduled Tasks (Backups)
+# 12. Automated Scheduled Tasks (Backups)
 # ---------------------------------------------------------------------------
 async def backup_scheduler():
     """Periodically archives database schema and sends SQLite file to active admins."""
@@ -1330,7 +1549,7 @@ async def backup_scheduler():
             await asyncio.sleep(3600)
 
 # ---------------------------------------------------------------------------
-# 12. Main Execution Entrypoint
+# 13. Main Execution Entrypoint
 # ---------------------------------------------------------------------------
 async def main():
     """Primary asynchronous orchestration loop starting background cron and bot daemon."""
