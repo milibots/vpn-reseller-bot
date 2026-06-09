@@ -269,8 +269,9 @@ class DBUser(Base):
     is_active = Column(Boolean, default=True)
     is_banned = Column(Boolean, default=False)
 
+
+
 class DBService(Base):
-    """Represents a virtual private server subscription connected to the API."""
     __tablename__ = "services"
     id = Column(Integer, primary_key=True, index=True)
     service_id = Column(Integer, index=True)
@@ -281,6 +282,14 @@ class DBService(Base):
     status = Column(String, default="active")
     sub_url = Column(String, nullable=True)
     expire_date = Column(String, nullable=True)
+    alert_50d = Column(Boolean, default=False)
+    alert_1d = Column(Boolean, default=False)
+    alert_50p = Column(Boolean, default=False)
+    alert_80p = Column(Boolean, default=False)
+    alert_90p = Column(Boolean, default=False)
+    alert_100p = Column(Boolean, default=False)
+
+
 
 class DBTransaction(Base):
     """Represents a financial transaction including deposits, card top-ups, and purchases."""
@@ -353,7 +362,15 @@ def execute_db_migrations():
             except Exception as e:
                 logger.error(f"Error migrating plan_overrides is_hidden: {e}")
 
-        # Ensure discount_codes table exists dynamically
+        columns_srv = [col["name"] for col in inspector.get_columns("services")]
+        for col_name in ["alert_50d", "alert_1d", "alert_50p", "alert_80p", "alert_90p", "alert_100p"]:
+            if col_name not in columns_srv:
+                try:
+                    conn.execute(text(f"ALTER TABLE services ADD COLUMN {col_name} BOOLEAN DEFAULT 0"))
+                    conn.commit()
+                except Exception as e:
+                    logger.error(f"Error migrating services {col_name}: {e}")
+
         if not inspector.has_table("discount_codes"):
             try:
                 DBDiscountCode.__table__.create(engine)
@@ -2553,8 +2570,116 @@ async def admin_decision_callback(callback: CallbackQuery):
                 await callback.message.edit_text(text=f"❌ رسید به مبلغ {escape_md(f'{int(tx.amount):,}')} تومان توسط ادمین *رد* شد\\.", parse_mode="MarkdownV2")
 
 # ---------------------------------------------------------------------------
-# 12. Automated Scheduled Tasks (Backups)
+# 12. Automated Scheduled Tasks (Backups & Monitor)
 # ---------------------------------------------------------------------------
+def parse_days_left(expire_date_str):
+    if not expire_date_str or "نامحدود" in expire_date_str:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%Y/%m/%d %H:%M:%S", "%Y/%m/%d"):
+        try:
+            return (datetime.strptime(expire_date_str, fmt) - datetime.utcnow()).days
+        except ValueError:
+            continue
+    return None
+
+async def service_usage_monitor():
+    while True:
+        await asyncio.sleep(1800)
+        try:
+            with SessionLocal() as db:
+                for s in db.query(DBService).all():
+                    details = api.get_service_details(s.service_id)
+                    if not details or not details.get("success"):
+                        continue
+                    user = db.query(DBUser).get(s.user_id)
+                    if not user:
+                        continue
+                    total_gb = float(details.get("traffic_total_gb") or 0.0)
+                    used_gb = float(details.get("traffic_used_gb") or 0.0)
+                    expire_date = details.get("expire_date")
+                    sub_url = details.get("sub_url") or s.sub_url
+                    pct = (used_gb / total_gb * 100) if total_gb > 0 else 0.0
+                    days_left = parse_days_left(expire_date)
+                    alerts = []
+                    if total_gb > 0 and used_gb >= total_gb and not s.alert_100p:
+                        s.alert_100p = True
+                        alerts.append(("100p", "🚫 ترافیک سرویس شما به اتمام رسید"))
+                    elif pct >= 90 and not s.alert_90p:
+                        s.alert_90p = True
+                        alerts.append(("90p", "⚠️ ۹۰٪ از حجم ترافیک سرویس مصرف شده است"))
+                    elif pct >= 80 and not s.alert_80p:
+                        s.alert_80p = True
+                        alerts.append(("80p", "⚠️ ۸۰٪ از حجم ترافیک سرویس مصرف شده است"))
+                    elif pct >= 50 and not s.alert_50p:
+                        s.alert_50p = True
+                        alerts.append(("50p", "ℹ️ ۵۰٪ از حجم ترافیک سرویس مصرف شده است"))
+                    if days_left is not None:
+                        if days_left <= 1 and not s.alert_1d:
+                            s.alert_1d = True
+                            alerts.append(("1d", "🚨 فقط ۱ روز تا پایان اعتبار سرویس باقی مانده است"))
+                        elif days_left <= 50 and not s.alert_50d:
+                            s.alert_50d = True
+                            alerts.append(("50d", "ℹ️ ۵۰ روز تا پایان اعتبار سرویس باقی مانده است"))
+                    if alerts:
+                        db.commit()
+                        for alert_type, title in alerts:
+                            msg_usr = (
+                                f"🔔 *{title}*\n\n"
+                                f"🖥 نام سرویس: `{escape_md_code(s.name)}`\n"
+                                f"📊 مصرف: *{escape_md(f'{used_gb:.2f}')}* از *{escape_md(f'{total_gb:.2f}')} GB*\n"
+                                f"⏳ انقضا: *{escape_md(expire_date or 'نامحدود')}*\n"
+                                f"🔗 لینک اشتراک:\n`{escape_md_code(sub_url)}`"
+                            )
+                            kb_usr = InlineKeyboardMarkup(inline_keyboard=[
+                                [InlineKeyboardButton(text="🔄 تمدید سریع سرویس", callback_data=f"srv_renew_{s.id}")],
+                                [InlineKeyboardButton(text="🛒 خرید سرویس جدید", callback_data="btn_buy_service")]
+                            ])
+                            try:
+                                await bot.send_message(chat_id=user.telegram_id, text=msg_usr, reply_markup=kb_usr, parse_mode="MarkdownV2")
+                            except Exception:
+                                pass
+                            msg_adm = (
+                                f"📢 *هشدار مصرف سرویس کاربران*\n\n"
+                                f"👤 کاربر: {escape_md(user.first_name or '')} \\({user.telegram_id}\\)\n"
+                                f"🖥 سرویس: `{escape_md_code(s.name)}`\n"
+                                f"🚨 نوع هشدار: *{escape_md(title)}*\n"
+                                f"📊 مصرف: {used_gb:.2f} / {total_gb:.2f} GB\n"
+                                f"⏳ انقضا: {expire_date or 'نامحدود'}"
+                            )
+                            kb_adm = InlineKeyboardMarkup(inline_keyboard=[
+                                [InlineKeyboardButton(text="👤 مشاهده پروفایل کاربر", callback_data=f"adm_usr_view_{user.id}")]
+                            ])
+                            for aid in config["ADMIN_IDS"]:
+                                try:
+                                    await bot.send_message(chat_id=aid, text=msg_adm, reply_markup=kb_adm, parse_mode="MarkdownV2")
+                                except Exception:
+                                    pass
+        except Exception as ex:
+            logger.error(f"Error in monitor: {ex}")
+
+@router.callback_query(F.data.startswith("adm_usr_view_"))
+async def adm_usr_view_callback(callback: CallbackQuery):
+    if callback.from_user.id not in config["ADMIN_IDS"]: return
+    usr_id = int(callback.data.split("_")[3])
+    with SessionLocal() as db:
+        u = db.query(DBUser).get(usr_id)
+        if not u:
+            return await callback.answer("کاربر پیدا نشد.", show_alert=True)
+        rank, _ = calculate_user_rank(db, u.id)
+        txt = (
+            f"👤 مشخصات کاربر:\n\n"
+            f"آیدی عددی: `{u.telegram_id}`\n"
+            f"نام: {escape_md(u.first_name or '')}\n"
+            f"نام کاربری: @{escape_md(u.username or '')}\n"
+            f"تراز حساب: *{escape_md(f'{int(u.balance):,}')}* تومان\n"
+            f"رتبه: {escape_md(rank)}"
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 بازگشت به پنل", callback_data="btn_admin_panel")]
+        ])
+        await safe_edit(callback.message, txt, reply_markup=kb, parse_mode="MarkdownV2")
+        await callback.answer()
+
 async def backup_scheduler():
     """Periodically archives database schema and sends SQLite file to active admins."""
     while True:
@@ -2586,9 +2711,9 @@ async def backup_scheduler():
 # 13. Main Execution Entrypoint
 # ---------------------------------------------------------------------------
 async def main():
-    """Primary asynchronous orchestration loop starting background cron and bot daemon."""
     print("Application daemon is ready. Starting polling services...")
     asyncio.create_task(backup_scheduler())
+    asyncio.create_task(service_usage_monitor())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
