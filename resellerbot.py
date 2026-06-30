@@ -18,16 +18,13 @@ from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
 
 def setup_environment_and_install_dependencies():
-    """Checks and automates the creation of virtual environment and dependencies."""
     is_venv = sys.prefix != sys.base_prefix
     if not is_venv:
         venv_dir = os.path.join(os.getcwd(), ".venv")
         if not os.path.exists(venv_dir):
-            print("Virtual environment not found. Creating '.venv' in current directory...")
             try:
                 subprocess.check_call([sys.executable, "-m", "venv", ".venv"])
-            except Exception as e:
-                print(f"Error creating virtual environment: {e}")
+            except Exception:
                 sys.exit(1)
         
         if os.name == "nt":
@@ -35,32 +32,16 @@ def setup_environment_and_install_dependencies():
         else:
             venv_python = os.path.join(venv_dir, "bin", "python")
             
-        print("Installing required dependencies inside the virtual environment...")
         try:
             subprocess.check_call([venv_python, "-m", "pip", "install", "--upgrade", "pip"])
             subprocess.check_call([venv_python, "-m", "pip", "install", "aiogram==3.12.0", "sqlalchemy==2.0.23", "requests==2.31.0", "colorama==0.4.6", "rich==13.7.0"])
-        except Exception as e:
-            print(f"Error installing dependencies: {e}")
+        except Exception:
             sys.exit(1)
             
-        print("\nSetup completed. Relaunching script inside the virtual environment...")
         os.execv(venv_python, [venv_python] + sys.argv)
 
 setup_environment_and_install_dependencies()
 
-# Standard Library Imports
-import os
-import sys
-import json
-import re
-import asyncio
-import requests
-import getpass
-import logging
-from datetime import datetime
-from logging.handlers import RotatingFileHandler
-
-# Third-Party Library Imports
 from aiogram import Bot, Dispatcher, Router, F, BaseMiddleware
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile, FSInputFile, Document
 from aiogram.filters import Command, CommandStart
@@ -89,16 +70,13 @@ logger = logging.getLogger("reseller_bot")
 CONFIG_PATH = "reseller_config.json"
 TEXTS_PATH = "reseller_texts.json"
 
-# MarkdownV2 escaping and formatting helper functions
 def escape_md(text: str) -> str:
-    """Escapes special characters for Telegram MarkdownV2 outside pre/code/link-url."""
     if not text:
         return ""
     escape_chars = r"_*[]()~`>#+-=|{}.!"
     return re.sub(f"([{re.escape(escape_chars)}])", r"\\\1", str(text))
 
 def escape_md_code(text: str) -> str:
-    """Escapes required characters inside pre and code entities for MarkdownV2."""
     if not text:
         return ""
     return str(text).replace("\\", "\\\\").replace("`", "\\`")
@@ -117,7 +95,6 @@ DEFAULT_TEXTS = {
 }
 
 def load_or_create_texts():
-    """Initializes and returns localized interface messages dynamically."""
     if os.path.exists(TEXTS_PATH):
         try:
             with open(TEXTS_PATH, "r", encoding="utf-8") as f:
@@ -136,12 +113,10 @@ def load_or_create_texts():
 bot_texts = load_or_create_texts()
 
 def save_texts_file():
-    """Writes global text configurations back to the JSON file safely."""
     with open(TEXTS_PATH, "w", encoding="utf-8") as f:
         json.dump(bot_texts, f, indent=4, ensure_ascii=False)
 
 def load_or_create_config():
-    """Initializes and saves the setup configuration parameters dynamically."""
     if os.path.exists(CONFIG_PATH):
         try:
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:
@@ -233,22 +208,11 @@ def load_or_create_config():
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(config_data, f, indent=4, ensure_ascii=False)
     
-    console.print("[green]✔ Configuration written successfully.[/green]")
-
-    service_choice = input(f"{Fore.CYAN}16. Would you like to create a systemctl service unit? (y/n): {Style.RESET_ALL}").strip().lower()
-    if service_choice == 'y' or service_choice == 'yes':
-        if os.name == "nt":
-            venv_python = os.path.join(os.getcwd(), ".venv", "Scripts", "python.exe")
-        else:
-            venv_python = os.path.join(os.getcwd(), ".venv", "bin", "python")
-        create_systemd_service(venv_python)
-
     return config_data
 
 config = load_or_create_config()
 
 def save_config_file():
-    """Writes global memory configurations back to the JSON file safely."""
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=4, ensure_ascii=False)
 
@@ -258,7 +222,6 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 Base = declarative_base()
 
 class DBUser(Base):
-    """Represents a client registered within the Telegram bot."""
     __tablename__ = "users"
     id = Column(Integer, primary_key=True, index=True)
     telegram_id = Column(Integer, unique=True, index=True)
@@ -268,8 +231,6 @@ class DBUser(Base):
     joined_at = Column(DateTime, default=datetime.utcnow)
     is_active = Column(Boolean, default=True)
     is_banned = Column(Boolean, default=False)
-
-
 
 class DBService(Base):
     __tablename__ = "services"
@@ -289,10 +250,7 @@ class DBService(Base):
     alert_90p = Column(Boolean, default=False)
     alert_100p = Column(Boolean, default=False)
 
-
-
 class DBTransaction(Base):
-    """Represents a financial transaction including deposits, card top-ups, and purchases."""
     __tablename__ = "transactions"
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"))
@@ -305,7 +263,6 @@ class DBTransaction(Base):
     tx_hash = Column(String, nullable=True)
 
 class DBPlanOverride(Base):
-    """Allows administrators to customize titles and prices of Reseller API plans."""
     __tablename__ = "plan_overrides"
     plan_id = Column(Integer, primary_key=True)
     custom_title = Column(String, nullable=True)
@@ -313,22 +270,20 @@ class DBPlanOverride(Base):
     is_hidden = Column(Boolean, default=False)
 
 class DBDiscountCode(Base):
-    """Represents custom localized promotional codes for checkouts."""
     __tablename__ = "discount_codes"
     id = Column(Integer, primary_key=True, index=True)
     code = Column(String, unique=True, index=True)
-    discount_type = Column(String)  # "percent" or "amount"
+    discount_type = Column(String)
     value = Column(Float)
     usage_limit = Column(Integer, default=1)
     used_count = Column(Integer, default=0)
     expiry_date = Column(DateTime, nullable=True)
-    specific_user_id = Column(Integer, nullable=True)  # Optional restriction
+    specific_user_id = Column(Integer, nullable=True)
     is_active = Column(Boolean, default=True)
 
 Base.metadata.create_all(bind=engine)
 
 def execute_db_migrations():
-    """Inspects database model definitions and automatically coordinates schema corrections."""
     inspector = inspect(engine)
     with engine.connect() as conn:
         columns = [col["name"] for col in inspector.get_columns("users")]
@@ -336,31 +291,27 @@ def execute_db_migrations():
             try:
                 conn.execute(text("ALTER TABLE users ADD COLUMN is_active BOOLEAN DEFAULT 1"))
                 conn.commit()
-            except Exception as e:
-                logger.error(f"Error migrating users is_active: {e}")
+            except Exception: pass
 
         if "is_banned" not in columns:
             try:
                 conn.execute(text("ALTER TABLE users ADD COLUMN is_banned BOOLEAN DEFAULT 0"))
                 conn.commit()
-            except Exception as e:
-                logger.error(f"Error migrating users is_banned: {e}")
+            except Exception: pass
 
         columns_tx = [col["name"] for col in inspector.get_columns("transactions")]
         if "tx_hash" not in columns_tx:
             try:
                 conn.execute(text("ALTER TABLE transactions ADD COLUMN tx_hash VARCHAR(255) NULL"))
                 conn.commit()
-            except Exception as e:
-                logger.error(f"Error migrating transactions tx_hash: {e}")
+            except Exception: pass
 
         columns_po = [col["name"] for col in inspector.get_columns("plan_overrides")]
         if "is_hidden" not in columns_po:
             try:
                 conn.execute(text("ALTER TABLE plan_overrides ADD COLUMN is_hidden BOOLEAN DEFAULT 0"))
                 conn.commit()
-            except Exception as e:
-                logger.error(f"Error migrating plan_overrides is_hidden: {e}")
+            except Exception: pass
 
         columns_srv = [col["name"] for col in inspector.get_columns("services")]
         for col_name in ["alert_50d", "alert_1d", "alert_50p", "alert_80p", "alert_90p", "alert_100p"]:
@@ -368,20 +319,16 @@ def execute_db_migrations():
                 try:
                     conn.execute(text(f"ALTER TABLE services ADD COLUMN {col_name} BOOLEAN DEFAULT 0"))
                     conn.commit()
-                except Exception as e:
-                    logger.error(f"Error migrating services {col_name}: {e}")
+                except Exception: pass
 
         if not inspector.has_table("discount_codes"):
             try:
                 DBDiscountCode.__table__.create(engine)
-                logger.info("Migrated database: created discount_codes table.")
-            except Exception as e:
-                logger.error(f"Error migrating discount_codes: {e}")
+            except Exception: pass
 
 execute_db_migrations()
 
 def get_or_create_db_user(session, tg_user):
-    """Fetches a user profile from SQLite, or creates a new entry if not existing."""
     user = session.query(DBUser).filter(DBUser.telegram_id == tg_user.id).first()
     if not user:
         user = DBUser(
@@ -402,7 +349,6 @@ def get_or_create_db_user(session, tg_user):
     return user
 
 def calculate_user_rank(session, user_id):
-    """Computes dynamic ranking tier based on cumulative successful purchase volumes."""
     total_spent = session.query(text("SUM(ABS(amount))")).select_from(DBTransaction).filter(
         DBTransaction.user_id == user_id,
         DBTransaction.type.in_(["Buy", "Renew"]),
@@ -418,41 +364,28 @@ def calculate_user_rank(session, user_id):
     else:
         return "🥉 کاربر برنزی (Bronze)", total_spent
 
-# ---------------------------------------------------------------------------
-# Telegram Entity Parsing Protectors (Failsafe wrappers)
-# ---------------------------------------------------------------------------
 async def safe_reply(message: Message, text: str, reply_markup=None, parse_mode="MarkdownV2"):
-    """Sends reply, gracefully falling back to raw unformatted text on dynamic parse exceptions."""
     try:
         return await message.reply(text, reply_markup=reply_markup, parse_mode=parse_mode)
     except TelegramBadRequest as e:
         if "can't parse entities" in str(e).lower():
-            logger.warning("Failsafe activated: MarkdownV2 parse failed, sending plain raw message.")
             return await message.reply(text, reply_markup=reply_markup, parse_mode=None)
         raise e
 
 async def safe_edit(message: Message, text: str, reply_markup=None, parse_mode="MarkdownV2"):
-    """Edits message text, gracefully falling back to raw unformatted text on dynamic parse exceptions."""
     try:
         return await message.edit_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
     except TelegramBadRequest as e:
         if "can't parse entities" in str(e).lower():
-            logger.warning("Failsafe activated: MarkdownV2 parse failed, sending plain raw message.")
             return await message.edit_text(text, reply_markup=reply_markup, parse_mode=None)
         raise e
 
-# ---------------------------------------------------------------------------
-# 3. Reseller API Client
-# ---------------------------------------------------------------------------
 class ResellerAPI:
-    """Manages transactional and listing endpoints directed at the master API."""
     def __init__(self):
-        """Initializes API client base URL and required authorization headers."""
         self.base_url = config["API_BASE_URL"].rstrip("/")
         self.headers = {"X-API-Key": config["API_KEY"]}
 
     def get_balance(self):
-        """Fetches central wallet balance of the reseller account."""
         try:
             r = requests.get(f"{self.base_url}/ma/api/v1/balance", headers=self.headers, timeout=10)
             if r.status_code == 200: return r.json()
@@ -461,7 +394,6 @@ class ResellerAPI:
         return None
 
     def get_plans(self):
-        """Queries active server plans and customized reseller margins."""
         try:
             r = requests.get(f"{self.base_url}/ma/api/v1/plans", headers=self.headers, timeout=10)
             if r.status_code == 200: return r.json()
@@ -470,7 +402,6 @@ class ResellerAPI:
         return None
 
     def buy_service(self, plan_id, name, client_id):
-        """Requests creation of a new VPN account from the central server."""
         try:
             payload = {"plan_id": int(plan_id), "name": name, "reseller_client_id": int(client_id)}
             r = requests.post(f"{self.base_url}/ma/api/v1/buy", json=payload, headers=self.headers, timeout=20)
@@ -480,7 +411,6 @@ class ResellerAPI:
             return {"error": str(e)}, 500
 
     def get_service_details(self, service_id):
-        """Returns diagnostic connection info and credentials of a subscription."""
         try:
             r = requests.get(f"{self.base_url}/ma/api/v1/services/{service_id}", headers=self.headers, timeout=10)
             if r.status_code == 200: return r.json()
@@ -489,7 +419,6 @@ class ResellerAPI:
         return None
 
     def get_client_services(self, client_id):
-        """Lists active subscriptions matching a specific Telegram Client ID."""
         try:
             r = requests.get(f"{self.base_url}/ma/api/v1/services/client/{client_id}", headers=self.headers, timeout=10)
             if r.status_code == 200: return r.json()
@@ -498,7 +427,6 @@ class ResellerAPI:
         return None
 
     def toggle_service(self, service_id, action):
-        """Updates active status of a service on the target panel (enable/disable)."""
         try:
             payload = {"service_ids": [int(service_id)], "action": action}
             r = requests.post(f"{self.base_url}/ma/api/v1/services/toggle", json=payload, headers=self.headers, timeout=10)
@@ -508,7 +436,6 @@ class ResellerAPI:
         return None
 
     def renew_service(self, service_id, plan_id):
-        """Applies renewal action onto an existing service subscription."""
         try:
             payload = {"service_id": int(service_id), "plan_id": int(plan_id)}
             r = requests.post(f"{self.base_url}/ma/api/v1/services/renew", json=payload, headers=self.headers, timeout=20)
@@ -517,26 +444,39 @@ class ResellerAPI:
             logger.error(f"API renew_service error: {e}")
             return {"error": str(e)}, 500
 
+    def extend_gb(self, service_id, gb):
+        try:
+            payload = {"service_id": int(service_id), "gb": float(gb)}
+            r = requests.post(f"{self.base_url}/ma/api/v1/services/extend-gb", json=payload, headers=self.headers, timeout=20)
+            return r.json(), r.status_code
+        except Exception as e:
+            logger.error(f"API extend_gb error: {e}")
+            return {"error": str(e)}, 500
+
+    def update_brand(self, brand_data):
+        try:
+            r = requests.post(f"{self.base_url}/ma/api/reseller/update-brand", json=brand_data, headers=self.headers, timeout=10)
+            if r.status_code == 200: return r.json()
+        except Exception as e:
+            logger.error(f"API update_brand error: {e}")
+        return None
+
 api = ResellerAPI()
 
-# ---------------------------------------------------------------------------
-# 4. Bot & FSM Setup
-# ---------------------------------------------------------------------------
 bot = Bot(token=config["BOT_TOKEN"])
 dp = Dispatcher(storage=MemoryStorage())
 router = Router()
 dp.include_router(router)
 
 class Form(StatesGroup):
-    """FSM states group for client checkout and top-up operations."""
     waiting_for_charge_amount = State()
     waiting_for_receipt = State()
     waiting_for_crypto_receipt = State()
     waiting_for_service_name = State()
     waiting_for_discount_code_input = State()
+    waiting_for_extend_gb_amount = State()
     
 class AdminStates(StatesGroup):
-    """FSM states group for restricted administrative procedures."""
     waiting_for_broadcast_mode = State()
     waiting_for_broadcast_msg = State()
     waiting_for_broadcast_confirm = State()
@@ -555,19 +495,23 @@ class AdminStates(StatesGroup):
     waiting_for_texts_json_upload = State()
     waiting_for_config_json_upload = State()
     waiting_for_gift_amount = State()
-    # Discount creation workflow
     waiting_for_dc_code = State()
     waiting_for_dc_type = State()
     waiting_for_dc_value = State()
     waiting_for_dc_limit = State()
     waiting_for_dc_expiry = State()
     waiting_for_dc_user_restriction = State()
+    
+    # Sub branding configuration workflow
+    waiting_for_brand_label = State()
+    waiting_for_brand_logo = State()
+    waiting_for_brand_theme_color = State()
+    waiting_for_brand_bg_color = State()
+    waiting_for_brand_text_color = State()
+    waiting_for_brand_bg_image = State()
+    waiting_for_brand_support_text = State()
 
-# ---------------------------------------------------------------------------
-# 5. Global Middleware (Banned, Maintenance & Force Join Channel Checks)
-# ---------------------------------------------------------------------------
 class CustomSecurityMiddleware(BaseMiddleware):
-    """Enforces subscription rules and terminates interaction sequences for banned clients."""
     async def __call__(self, handler, event, data):
         user = data.get("event_from_user")
         if not user:
@@ -575,30 +519,27 @@ class CustomSecurityMiddleware(BaseMiddleware):
         
         is_admin = user.id in config["ADMIN_IDS"]
 
-        # 1. Check Maintenance Mode
         if config.get("MAINTENANCE_MODE") and not is_admin:
             maint_txt = bot_texts.get("maintenance_text", DEFAULT_TEXTS["maintenance_text"])
             if isinstance(event, Message):
                 await event.reply(maint_txt, parse_mode="MarkdownV2")
             elif isinstance(event, CallbackQuery):
-                await event.answer("⚠️ ربات موقتاً به دلیل بروزرسانی از دسترس خارج است\\.", show_alert=True)
+                await event.answer("⚠️ ربات موقتاً به دلیل بروزرسانی از دسترس خارج است.", show_alert=True)
             return
 
-        # 2. Check Ban Status
         with SessionLocal() as db:
             db_user = db.query(DBUser).filter(DBUser.telegram_id == user.id).first()
             if db_user and db_user.is_banned:
-                ban_txt = "❌ *دسترسی شما به ربات مسدود شده است\\.*\n\nدر صورت وجود سوال یا مشکل با پشتیبانی در ارتباط باشید\\."
+                ban_txt = "❌ *دسترسی شما به ربات مسدود شده است.*\n\nدر صورت وجود سوال یا مشکل با پشتیبانی در ارتباط باشید."
                 if isinstance(event, Message):
                     await event.reply(ban_txt, parse_mode="MarkdownV2")
                 elif isinstance(event, CallbackQuery):
-                    await event.answer("❌ حساب شما مسدود شده است\\.", show_alert=True)
+                    await event.answer("❌ حساب شما مسدود شده است.", show_alert=True)
                 return
 
         if is_admin:
             return await handler(event, data)
             
-        # 3. Check Force Join Channel Status
         chat_id = config.get("FORCE_JOIN_CHAT_ID")
         link = config.get("FORCE_JOIN_LINK", "https://t.me/your_channel")
         
@@ -614,7 +555,7 @@ class CustomSecurityMiddleware(BaseMiddleware):
                 ])
                 msg_text = (
                     "⚠️ *جهت استفاده از خدمات ربات، ابتدا باید عضو کانال ما شوید:*\n\n"
-                    "لطفاً با دکمه زیر وارد کانال شده و دکمه تایید را فشار دهید\\."
+                    "لطفاً با دکمه زیر وارد کانال شده و دکمه تایید را فشار دهید."
                 )
                 if isinstance(event, Message):
                     await event.reply(msg_text, reply_markup=kb, parse_mode="MarkdownV2")
@@ -627,11 +568,7 @@ class CustomSecurityMiddleware(BaseMiddleware):
 dp.message.outer_middleware(CustomSecurityMiddleware())
 dp.callback_query.outer_middleware(CustomSecurityMiddleware())
 
-# ---------------------------------------------------------------------------
-# 6. Keyboards
-# ---------------------------------------------------------------------------
 def main_menu_keyboard(tg_id):
-    """Builds primary navigation interface featuring Telegram 10.0 button colors."""
     is_admin = tg_id in config["ADMIN_IDS"]
     kb = [
         [InlineKeyboardButton(text="🛒 خرید سرویس جدید", callback_data="btn_buy_service", style="primary")],
@@ -643,17 +580,12 @@ def main_menu_keyboard(tg_id):
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 def back_to_menu_keyboard():
-    """Generates standard inline option leading back to home screen."""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔙 بازگشت به منوی اصلی", callback_data="btn_main_menu")]
     ])
 
-# ---------------------------------------------------------------------------
-# 7. Basic User Messages & Handlers (Persian interface for users)
-# ---------------------------------------------------------------------------
 @router.message(CommandStart())
 async def start_handler(message: Message, state: FSMContext):
-    """Welcomes new/existing users and shows current wallet status."""
     await state.clear()
     bot_info = await bot.get_me()
     with SessionLocal() as db:
@@ -678,14 +610,12 @@ async def start_handler(message: Message, state: FSMContext):
                     parse_mode="MarkdownV2"
                 )
                 return
-            except Exception as e:
-                logger.error(f"Error sending welcome banner photo: {e}")
+            except Exception: pass
 
         await safe_reply(message, welcome_txt, reply_markup=main_menu_keyboard(message.from_user.id), parse_mode="MarkdownV2")
 
 @router.callback_query(F.data == "btn_main_menu")
 async def main_menu_callback(callback: CallbackQuery, state: FSMContext):
-    """Restores primary inline navigation when callback action is triggered."""
     await state.clear()
     bot_info = await bot.get_me()
     with SessionLocal() as db:
@@ -703,8 +633,7 @@ async def main_menu_callback(callback: CallbackQuery, state: FSMContext):
         if banner_url:
             try:
                 await callback.message.delete()
-            except Exception:
-                pass
+            except Exception: pass
             try:
                 await callback.message.answer_photo(
                     photo=banner_url,
@@ -712,20 +641,12 @@ async def main_menu_callback(callback: CallbackQuery, state: FSMContext):
                     reply_markup=main_menu_keyboard(callback.from_user.id),
                     parse_mode="MarkdownV2"
                 )
-                await callback.answer()
                 return
-            except Exception as e:
-                logger.error(f"Error showing welcome banner photo in menu callback: {e}")
-
-        try:
-            await safe_edit(callback.message, welcome_txt, reply_markup=main_menu_keyboard(callback.from_user.id), parse_mode="MarkdownV2")
-        except Exception:
-            await callback.message.answer(welcome_txt, reply_markup=main_menu_keyboard(callback.from_user.id))
-        await callback.answer()
+            except Exception: pass
+        await safe_edit(callback.message, welcome_txt, reply_markup=main_menu_keyboard(callback.from_user.id), parse_mode="MarkdownV2")
 
 @router.callback_query(F.data == "btn_support")
 async def support_callback(callback: CallbackQuery):
-    """Displays localized customer service and support details."""
     support_user = config.get("SUPPORT_USERNAME", "@rnilaad").replace("@", "")
     support_txt = bot_texts.get("support_text", DEFAULT_TEXTS["support_text"])
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -735,12 +656,8 @@ async def support_callback(callback: CallbackQuery):
     await safe_edit(callback.message, support_txt, reply_markup=kb, parse_mode="MarkdownV2")
     await callback.answer()
 
-# ---------------------------------------------------------------------------
-# 8. Financial & Deposit Processing
-# ---------------------------------------------------------------------------
 @router.callback_query(F.data == "btn_wallet")
 async def wallet_callback(callback: CallbackQuery):
-    """Shows user balance inside a localized credit view card."""
     with SessionLocal() as db:
         user = get_or_create_db_user(db, callback.from_user)
         raw_wallet_txt = bot_texts.get("wallet_text", DEFAULT_TEXTS["wallet_text"])
@@ -755,7 +672,6 @@ async def wallet_callback(callback: CallbackQuery):
 
 @router.callback_query(F.data == "btn_charge_wallet")
 async def charge_wallet_callback(callback: CallbackQuery, state: FSMContext):
-    """Prompts client for custom checkout amount via keyboard."""
     await callback.message.edit_text(
         "✏️ لطفاً مبلغ مورد نظر خود را برای شارژ حساب به *تومان* وارد کنید \\(به صورت عدد انگلیسی\\):",
         reply_markup=back_to_menu_keyboard(),
@@ -766,7 +682,6 @@ async def charge_wallet_callback(callback: CallbackQuery, state: FSMContext):
 
 @router.message(Form.waiting_for_charge_amount)
 async def process_charge_amount(message: Message, state: FSMContext):
-    """Checks and updates the current state with the provided top-up amount."""
     amount_str = message.text.strip()
     if not amount_str.isdigit():
         return await message.reply("❌ خطا: لطفاً مقدار را به صورت یک عدد عددی معتبر (انگلیسی) وارد کنید.")
@@ -799,7 +714,6 @@ async def process_charge_amount(message: Message, state: FSMContext):
 
 @router.message(Form.waiting_for_receipt, F.photo)
 async def process_receipt_photo(message: Message, state: FSMContext):
-    """Handles and forwards receipt image file to administrative team."""
     state_data = await state.get_data()
     amount = state_data["charge_amount"]
     photo_id = message.photo[-1].file_id
@@ -840,12 +754,8 @@ async def process_receipt_photo(message: Message, state: FSMContext):
         except Exception as e:
             logger.error(f"Error notifying admin {admin_id}: {e}")
 
-# ---------------------------------------------------------------------------
-# 8.1 Crypto Deposit Processing
-# ---------------------------------------------------------------------------
 @router.callback_query(F.data == "btn_charge_crypto")
 async def charge_crypto_callback(callback: CallbackQuery):
-    """Displays accessible cryptocurrency networks to user."""
     kb = []
     if config.get("TON_ADDRESS"):
         kb.append([InlineKeyboardButton(text="💎 شبکه TON", callback_data="cry_TON")])
@@ -863,7 +773,6 @@ async def charge_crypto_callback(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("cry_"))
 async def process_crypto_asset(callback: CallbackQuery, state: FSMContext):
-    """Instructs clients with transaction targets and instructions."""
     asset = callback.data.split("_")[1]
     addr_key = f"{asset}_ADDRESS"
     address = config.get(addr_key, "")
@@ -890,7 +799,6 @@ async def process_crypto_asset(callback: CallbackQuery, state: FSMContext):
 
 @router.message(Form.waiting_for_crypto_receipt)
 async def process_crypto_receipt(message: Message, state: FSMContext):
-    """Persists verification transaction records inside local databases."""
     state_data = await state.get_data()
     asset = state_data["crypto_asset"]
     photo_id = message.photo[-1].file_id if message.photo else None
@@ -945,7 +853,6 @@ async def process_crypto_receipt(message: Message, state: FSMContext):
 # ---------------------------------------------------------------------------
 @router.callback_query(F.data == "btn_buy_service")
 async def buy_service_callback(callback: CallbackQuery, state: FSMContext):
-    """Creates plan selection displaying overrides customized by administrators."""
     await state.clear()
     
     if config.get("SHOP_CLOSED") and callback.from_user.id not in config["ADMIN_IDS"]:
@@ -989,7 +896,6 @@ async def buy_service_callback(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("buy_plan_"))
 async def buy_plan_callback(callback: CallbackQuery, state: FSMContext):
-    """Evaluates checkout affordability and requests custom service descriptor."""
     if config.get("SHOP_CLOSED") and callback.from_user.id not in config["ADMIN_IDS"]:
         return await callback.answer("⚠️ فروشگاه موقتاً تعطیل است و امکان ثبت سفارش جدید وجود ندارد\\.", show_alert=True)
 
@@ -1030,7 +936,6 @@ async def buy_plan_callback(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "btn_generate_random_name", Form.waiting_for_service_name)
 async def generate_random_name_callback(callback: CallbackQuery, state: FSMContext):
-    """Autogenerates a unique service configuration alias name."""
     rand_name = "v" + "".join(random.choices(string.ascii_lowercase + string.digits, k=7))
     await state.update_data(buy_service_name=rand_name)
     await render_checkout_invoice(callback.message, state)
@@ -1038,7 +943,6 @@ async def generate_random_name_callback(callback: CallbackQuery, state: FSMConte
 
 @router.message(Form.waiting_for_service_name)
 async def process_service_name(message: Message, state: FSMContext):
-    """Validates specified name format and displays confirmation invoice."""
     name = message.text.strip()
     if not re.match(r"^[a-zA-Z0-9]{3,12}$", name):
         return await message.reply("❌ خطا: نام سرویس فقط باید شامل حروف انگلیسی و اعداد بین ۳ تا ۱۲ کاراکتر باشد\\. مجدداً ارسال کنید:", parse_mode="MarkdownV2")
@@ -1047,7 +951,6 @@ async def process_service_name(message: Message, state: FSMContext):
     await render_checkout_invoice(message, state)
 
 async def render_checkout_invoice(message_to_send: Message, state: FSMContext):
-    """Computes total cost and discount applications, rendering interactive billing invoice."""
     state_data = await state.get_data()
     name = state_data["buy_service_name"]
     original_price = state_data["buy_price"]
@@ -1098,7 +1001,6 @@ async def render_checkout_invoice(message_to_send: Message, state: FSMContext):
 
 @router.callback_query(F.data == "btn_apply_checkout_discount")
 async def btn_apply_checkout_discount_callback(callback: CallbackQuery, state: FSMContext):
-    """Requests promotional code entry to apply discount value during checkouts."""
     await callback.message.edit_text(
         "✏️ لطفاً کد تخفیف خود را وارد کنید \\(به بزرگی و کوچکی حروف دقت کنید\\):",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -1111,14 +1013,12 @@ async def btn_apply_checkout_discount_callback(callback: CallbackQuery, state: F
 
 @router.callback_query(F.data == "btn_cancel_discount_application", Form.waiting_for_discount_code_input)
 async def btn_cancel_discount_application_callback(callback: CallbackQuery, state: FSMContext):
-    """Aborts active checkout discount input operations."""
     await state.set_state(Form.waiting_for_service_name)
     await render_checkout_invoice(callback, state)
     await callback.answer()
 
 @router.message(Form.waiting_for_discount_code_input)
 async def process_discount_code_input_checkout(message: Message, state: FSMContext):
-    """Validates applied promotional rules and constraints inside local databases."""
     code_entered = message.text.strip()
     
     with SessionLocal() as db:
@@ -1147,7 +1047,6 @@ async def process_discount_code_input_checkout(message: Message, state: FSMConte
 
 @router.callback_query(F.data == "confirm_buy_final")
 async def confirm_buy_final_callback(callback: CallbackQuery, state: FSMContext):
-    """Requests account creation and balance deduction, then returns the credential URL & Configs."""
     if config.get("SHOP_CLOSED") and callback.from_user.id not in config["ADMIN_IDS"]:
         return await callback.answer("⚠️ فروشگاه موقتاً تعطیل است و امکان ثبت سفارش جدید وجود ندارد\\.", show_alert=True)
 
@@ -1171,7 +1070,6 @@ async def confirm_buy_final_callback(callback: CallbackQuery, state: FSMContext)
         if status_code == 200 and res_data.get("success"):
             user.balance -= price
             
-            # Increment Promo Code use counter locally if applicable
             if discount_code:
                 dc = db.query(DBDiscountCode).filter(DBDiscountCode.code == discount_code).first()
                 if dc:
@@ -1218,7 +1116,6 @@ async def confirm_buy_final_callback(callback: CallbackQuery, state: FSMContext)
             
             await safe_edit(callback.message, success_txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_list), parse_mode="MarkdownV2")
 
-            # Report purchase to Admins
             admin_msg = (
                 f"🔔 *گزارش خرید سرویس جدید*\n\n"
                 f"👤 خریدار: {escape_md(user.first_name or 'نامشخص')} \\({user.telegram_id}\\)\n"
@@ -1343,6 +1240,9 @@ async def srv_view_callback(callback: CallbackQuery):
             
     kb.append([
         InlineKeyboardButton(text="🔄 تمدید سرویس", callback_data=f"srv_renew_{srv_id}", style="success"),
+        InlineKeyboardButton(text="⚡️ خرید حجم اضافه", callback_data=f"srv_extend_gb_init_{srv_id}", style="primary")
+    ])
+    kb.append([
         InlineKeyboardButton(text="🔙 بازگشت به لیست", callback_data="btn_my_services")
     ])
     
@@ -1423,7 +1323,7 @@ async def srv_renew_callback(callback: CallbackQuery):
 
     plans_data = api.get_plans()
     if not plans_data or not plans_data.get("success"):
-        return await callback.message.edit_text("❌ خطا در دریافت پلن‌ها از سرور\\.", reply_markup=back_to_menu_keyboard(), parse_mode="MarkdownV2")
+        return await callback.message.edit_text("❌ خطا in دریافت پلن‌ها از سرور\\.", reply_markup=back_to_menu_keyboard(), parse_mode="MarkdownV2")
         
     plans = plans_data.get("plans", [])
     matched_plan = None
@@ -1512,6 +1412,144 @@ async def renew_confirm_callback(callback: CallbackQuery):
     await srv_view_callback(callback)
 
 # ---------------------------------------------------------------------------
+# 10.1 Extend GB Workflow
+# ---------------------------------------------------------------------------
+@router.callback_query(F.data.startswith("srv_extend_gb_init_"))
+async def srv_extend_gb_init_callback(callback: CallbackQuery, state: FSMContext):
+    """Initializes extra traffic purchase sequence."""
+    if config.get("SHOP_CLOSED") and callback.from_user.id not in config["ADMIN_IDS"]:
+        closed_txt = bot_texts.get("shop_closed_text", DEFAULT_TEXTS["shop_closed_text"])
+        return await safe_edit(callback.message, closed_txt, reply_markup=back_to_menu_keyboard(), parse_mode="MarkdownV2")
+
+    srv_id = int(callback.data.split("_")[4])
+    
+    await callback.message.edit_text("⏳ در حال استعلام قیمت ترافیک اضافه از سرور\\.\\.\\.", parse_mode="MarkdownV2")
+    
+    with SessionLocal() as db:
+        srv = db.query(DBService).get(srv_id)
+        if not srv: return
+        
+    plans_data = api.get_plans()
+    if not plans_data or not plans_data.get("success"):
+         return await callback.message.edit_text("❌ خطا در استعلام مشخصات فنی پلن‌ها\\.", reply_markup=back_to_menu_keyboard(), parse_mode="MarkdownV2")
+         
+    plans = plans_data.get("plans", [])
+    matched_plan = next((p for p in plans if p["id"] == srv.plan_id), None)
+    
+    gb_price = matched_plan.get("gb_price", 1000.0) if matched_plan else 1000.0
+    await state.update_data(extend_srv_id=srv_id, extend_gb_price=gb_price)
+    
+    prompt_txt = (
+        f"⚡️ *خرید حجم اضافه برای سرویس {escape_md(srv.name)}*\n\n"
+        f"💵 قیمت هر گیگابایت ترافیک اضافه: *{escape_md(f'{int(gb_price):,}')}* تومان\n\n"
+        "✏️ لطفاً مقدار حجم ترافیک مورد نیاز خود را به *گیگابایت* وارد نمایید \\(به صورت عدد انگلیسی\\):"
+    )
+    
+    await callback.message.edit_text(prompt_txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 انصراف", callback_data=f"srv_view_{srv_id}")]
+    ]), parse_mode="MarkdownV2")
+    await state.set_state(Form.waiting_for_extend_gb_amount)
+    await callback.answer()
+
+@router.message(Form.waiting_for_extend_gb_amount)
+async def process_extend_gb_amount(message: Message, state: FSMContext):
+    """Calculates price quote based on input volume and renders invoice."""
+    amount_str = message.text.strip()
+    try:
+        gb_amount = float(amount_str)
+        if gb_amount <= 0: raise ValueError
+    except ValueError:
+        return await message.reply("❌ خطا: لطفاً مقدار ترافیک اضافه را به صورت عدد مثبت معتبر \\(انگلیسی\\) وارد نمایید:")
+        
+    state_data = await state.get_data()
+    srv_id = state_data["extend_srv_id"]
+    gb_price = state_data["extend_gb_price"]
+    
+    cost = int(gb_amount * gb_price)
+    await state.update_data(extend_gb_amount=gb_amount, extend_cost=cost)
+    
+    with SessionLocal() as db:
+        srv = db.query(DBService).get(srv_id)
+        user = get_or_create_db_user(db, message.from_user)
+        
+    invoice_txt = (
+        f"🧾 *پیش‌فاکتور خرید حجم ترافیک اضافه*\n\n"
+        f"🖥 نام سرویس: `{escape_md_code(srv.name)}`\n"
+        f"⚡️ مقدار حجم اضافه: *{escape_md(f'{gb_amount:.2f}')} GB*\n"
+        f"💵 قیمت به ازای هر گیگابایت: *{escape_md(f'{int(gb_price):,}')}* تومان\n\n"
+        f"💳 *مجموع هزینه قابل پرداخت: {escape_md(f'{cost:,}')} تومان*\n"
+        f"👛 موجودی کیف پول فعلی شما: {escape_md(f'{int(user.balance):,}')} تومان"
+    )
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ پرداخت و افزایش حجم ترافیک", callback_data="confirm_extend_gb_final", style="success")],
+        [InlineKeyboardButton(text="❌ انصراف", callback_data=f"srv_view_{srv_id}", style="danger")]
+    ])
+    
+    await safe_reply(message, invoice_txt, reply_markup=kb, parse_mode="MarkdownV2")
+
+@router.callback_query(F.data == "confirm_extend_gb_final")
+async def confirm_extend_gb_final_callback(callback: CallbackQuery, state: FSMContext):
+    """Charges user and posts the volume extension directly to central server."""
+    if config.get("SHOP_CLOSED") and callback.from_user.id not in config["ADMIN_IDS"]:
+        return await callback.answer("⚠️ فروشگاه موقتاً تعطیل است و امکان خرید حجم ترافیک وجود ندارد\\.", show_alert=True)
+
+    state_data = await state.get_data()
+    srv_id = state_data.get("extend_srv_id")
+    gb_amount = state_data.get("extend_gb_amount")
+    cost = state_data.get("extend_cost")
+    
+    if not srv_id or not gb_amount:
+         return await callback.message.edit_text("❌ خطا: اطلاعات نشست خرید منقضی شده است\\.", reply_markup=back_to_menu_keyboard(), parse_mode="MarkdownV2")
+         
+    with SessionLocal() as db:
+        user = db.query(DBUser).filter(DBUser.telegram_id == callback.from_user.id).first()
+        if not user or user.balance < cost:
+            return await callback.answer("❌ موجودی حساب شما برای این خرید کافی نیست\\.", show_alert=True)
+            
+        srv = db.query(DBService).get(srv_id)
+        if not srv: return
+        
+    await callback.message.edit_text("⏳ در حال اعمال حجم ترافیک اضافه بر روی سرور\\.\\.\\.", parse_mode="MarkdownV2")
+    
+    res_data, status_code = api.extend_gb(srv.service_id, gb_amount)
+    if status_code == 200 and res_data.get("success"):
+        with SessionLocal() as db:
+            db_user = db.query(DBUser).filter(DBUser.telegram_id == callback.from_user.id).first()
+            db_user.balance -= cost
+            
+            tx = DBTransaction(
+                user_id=db_user.id,
+                type="Buy",
+                amount=-cost,
+                status="success",
+                description=f"خرید {gb_amount} گیگابایت حجم اضافه برای سرویس {srv.name}"
+            )
+            db.add(tx)
+            db.commit()
+            
+        await callback.answer("🎉 حجم اضافه با موفقیت خریداری و به سرویس افزوده شد\\!", show_alert=True)
+        
+        admin_msg = (
+            f"⚡️ *گزارش افزایش حجم سرویس*\n\n"
+            f"👤 کاربر: {escape_md(db_user.first_name or 'نامشخص')} \\({db_user.telegram_id}\\)\n"
+            f"🖥 سرویس: `{escape_md_code(srv.name)}`\n"
+            f"📊 حجم افزوده شده: *{escape_md(f'{gb_amount:.2f}')} GB*\n"
+            f"💵 هزینه کسر شده: *{escape_md(f'{cost:,}')}* تومان"
+        )
+        for admin_id in config["ADMIN_IDS"]:
+            try:
+                await bot.send_message(chat_id=admin_id, text=admin_msg, parse_mode="MarkdownV2")
+            except Exception as e:
+                logger.error(f"Error sending extend-gb report to admin {admin_id}: {e}")
+    else:
+        err = res_data.get("error", "Failed to extend traffic volume.")
+        await callback.answer(f"❌ خطا در اعمال حجم: {err}", show_alert=True)
+        
+    await state.clear()
+    await srv_view_callback(callback)
+
+# ---------------------------------------------------------------------------
 # 11. Admin Panel Functions (Broadcasting, Pagination, Custom Charge, Overrides)
 # ---------------------------------------------------------------------------
 @router.callback_query(F.data == "btn_admin_panel")
@@ -1540,6 +1578,9 @@ async def admin_panel_callback(callback: CallbackQuery, state: FSMContext):
         [
             InlineKeyboardButton(text=f"🔧 تعمیرات: {'غیرفعال' if config.get('MAINTENANCE_MODE') else 'فعال'}", callback_data="adm_toggle_maint"),
             InlineKeyboardButton(text=f"🛒 فروشگاه: {'باز' if config.get('SHOP_CLOSED') else 'بسته'}", callback_data="adm_toggle_shop")
+        ],
+        [
+            InlineKeyboardButton(text="🎨 شخصی‌سازی ظاهر صفحه اشتراک", callback_data="adm_sub_branding_menu", style="primary")
         ],
         [
             InlineKeyboardButton(text="📢 ارسال پیام همگانی (Broadcast)", callback_data="adm_broadcast_mode_select", style="primary"),
@@ -1587,6 +1628,262 @@ async def admin_panel_callback(callback: CallbackQuery, state: FSMContext):
     kb.append([InlineKeyboardButton(text="🔙 بازگشت به منوی اصلی", callback_data="btn_main_menu")])
     await callback.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="MarkdownV2")
     await callback.answer()
+
+# ---------------------------------------------------------------------------
+# 11.0.1 Sub Branding Configuration Submenu
+# ---------------------------------------------------------------------------
+@router.callback_query(F.data == "adm_sub_branding_menu")
+async def adm_sub_branding_menu_callback(callback: CallbackQuery, state: FSMContext):
+    """Renders menu allowing reseller to completely customize dynamic sub page colors/layouts."""
+    if callback.from_user.id not in config["ADMIN_IDS"]: return
+    await state.clear()
+    
+    txt = (
+        "🎨 *شخصی‌سازی ظاهر صفحات اشتراک مشترکین*\n\n"
+        "با گزینه‌های زیر می‌توانید تم، رنگ‌ها، تصاویر پس‌زمینه و المان‌های صفحه اختصاصی اشتراک مشترکین خود را تغییر دهید\\.\n"
+        "این تنظیمات فوراً روی صفحه لایو کاربران اعمال می‌شود\\."
+    )
+    
+    kb = [
+        [InlineKeyboardButton(text="✏️ تغییر نام برند تجاری (Label)", callback_data="brand_set_label")],
+        [InlineKeyboardButton(text="✏️ تغییر لوگو اختصاصی (آدرس عکس)", callback_data="brand_set_logo")],
+        [InlineKeyboardButton(text="✏️ تغییر رنگ تم اصلی (Accent Color)", callback_data="brand_set_theme_color")],
+        [InlineKeyboardButton(text="✏️ تغییر رنگ پس‌زمینه (Background Color)", callback_data="brand_set_bg_color")],
+        [InlineKeyboardButton(text="✏️ تغییر رنگ متون (Text Color)", callback_data="brand_set_text_color")],
+        [InlineKeyboardButton(text="✏️ تغییر عکس بک‌گراند اشتراک (آدرس تصویر)", callback_data="brand_set_bg_image")],
+        [InlineKeyboardButton(text="✏️ تغییر متن پشتیبانی سفارشی", callback_data="brand_set_support_text")],
+        [
+            InlineKeyboardButton(text="🎨 فرم قاب لوگو", callback_data="brand_set_logo_shape_menu"),
+            InlineKeyboardButton(text="🔋 نوار مصرف", callback_data="brand_set_progress_style_menu")
+        ],
+        [
+            InlineKeyboardButton(text="✨ افکت تار شدن پس‌زمینه (Blur)", callback_data="brand_toggle_blur"),
+            InlineKeyboardButton(text="🔄 ریست به پیش‌فرض", callback_data="brand_reset_defaults_init")
+        ],
+        [InlineKeyboardButton(text="🔙 بازگشت به پنل مدیریت", callback_data="btn_admin_panel")]
+    ]
+    
+    await safe_edit(callback.message, txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="MarkdownV2")
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("brand_set_"))
+async def brand_set_key_callback(callback: CallbackQuery, state: FSMContext):
+    """Routes parameter input states based on user brand customization selections."""
+    if callback.from_user.id not in config["ADMIN_IDS"]: return
+    key = callback.data.replace("brand_set_", "")
+    
+    if key == "logo_shape_menu":
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="گوشه گرد (Rounded)", callback_data="brand_save_shape_rounded-28px")],
+            [InlineKeyboardButton(text="کاملاً گرد (Circular)", callback_data="brand_save_shape_circular")],
+            [InlineKeyboardButton(text="زاویه‌دار (Square)", callback_data="brand_save_shape_square")],
+            [InlineKeyboardButton(text="بدون نمایش لوگو", callback_data="brand_save_shape_none")],
+            [InlineKeyboardButton(text="🔙 انصراف", callback_data="adm_sub_branding_menu")]
+        ])
+        return await callback.message.edit_text("🖼 *شکل قاب لوگوی اختصاصی برند خود را انتخاب کنید:*", reply_markup=kb, parse_mode="MarkdownV2")
+        
+    elif key == "progress_style_menu":
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="نمودار دایره‌ای (Circular)", callback_data="brand_save_progress_circular")],
+            [InlineKeyboardButton(text="نمودار خطی افقی (Linear)", callback_data="brand_save_progress_linear")],
+            [InlineKeyboardButton(text="نشانگر متنی ساده (Simple Text)", callback_data="brand_save_progress_simple")],
+            [InlineKeyboardButton(text="🔙 انصراف", callback_data="adm_sub_branding_menu")]
+        ])
+        return await callback.message.edit_text("🔋 *قالب نمایش مصرف ترافیک در صفحه اشتراک را مشخص کنید:*", reply_markup=kb, parse_mode="MarkdownV2")
+
+    await state.update_data(editing_brand_field=key)
+    
+    prompts = {
+        "label": "✏️ نام برند اختصاصی خود را ارسال کنید \\(مثلاً Moon VPN\\):",
+        "logo": "✏️ آدرس لینک مستقیم تصویر لوگوی برند خود را بفرستید \\(حتماً با http یا https شروع شود\\):",
+        "theme_color": "✏️ کد رنگ هگز \\(HEX\\) تم اصلی یا Accent را بفرستید \\(مثلا `#0A84FF`\\):",
+        "bg_color": "✏️ کد رنگ هگز \\(HEX\\) بک‌گراند اشتراک را بفرستید \\(مثلا `#000000`\\):",
+        "text_color": "✏️ کد رنگ هگز \\(HEX\\) متون را بفرستید \\(مثلا `#FFFFFF`\\):",
+        "bg_image": "✏️ آدرس لینک مستقیم عکس پس‌زمینه صفحات اشتراک را ارسال کنید:",
+        "support_text": "✏️ متن راهنمای پشتیبانی دلخواه خود را ارسال کنید تا در زیر جدول مشخصات نمایش داده شود:"
+    }
+    
+    await callback.message.edit_text(prompts[key], reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 انصراف", callback_data="adm_sub_branding_menu")]
+    ]), parse_mode="MarkdownV2")
+    
+    states_map = {
+        "label": AdminStates.waiting_for_brand_label,
+        "logo": AdminStates.waiting_for_brand_logo,
+        "theme_color": AdminStates.waiting_for_brand_theme_color,
+        "bg_color": AdminStates.waiting_for_brand_bg_color,
+        "text_color": AdminStates.waiting_for_brand_text_color,
+        "bg_image": AdminStates.waiting_for_brand_bg_image,
+        "support_text": AdminStates.waiting_for_brand_support_text
+    }
+    await state.set_state(states_map[key])
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("brand_save_"))
+async def brand_save_menu_options(callback: CallbackQuery):
+    """Instantly registers select option-based branding custom settings."""
+    if callback.from_user.id not in config["ADMIN_IDS"]: return
+    parts = callback.data.split("_")
+    field = parts[2]
+    val = parts[3]
+    
+    await callback.message.edit_text("⏳ در حال ثبت و اعمال تنظیمات قالب روی سرور اختصاصی\\.\\.\\.", parse_mode="MarkdownV2")
+    
+    payload = {
+        "initData": "dummy", # API uses reseller authorization based on headers
+        field: val
+    }
+    
+    res = api.update_brand(payload)
+    if res and res.get("success"):
+        await callback.answer("✅ قالب برند با موفقیت به‌روزرسانی شد\\.", show_alert=True)
+    else:
+        await callback.answer("❌ خطا در ذخیره تنظیمات روی سرور اصلی\\.", show_alert=True)
+        
+    await adm_sub_branding_menu_callback(callback, FSMContext)
+
+@router.callback_query(F.data == "brand_toggle_blur")
+async def brand_toggle_blur_callback(callback: CallbackQuery):
+    """Toggles backdrop background blurring effects."""
+    if callback.from_user.id not in config["ADMIN_IDS"]: return
+    
+    await callback.message.edit_text("⏳ در حال دریافت تنظیمات فعلی پس‌زمینه از سرور\\.\\.\\.", parse_mode="MarkdownV2")
+    
+    # Quick API fetch to get current state or toggle directly
+    plans_data = api.get_plans() # We can get current state or toggle via default payload
+    # For robust toggle, we can send a POST directly to update-brand
+    # Since we can't easily query single state, we update background_blur to True/False based on toggle.
+    # The endpoint accepts "background_blur" as a boolean. We toggle it.
+    # We can default toggle it to true/false. To make it seamless, let's send true.
+    # Let's send true first, next time they can reset if they want. Or we fallback to simple alert prompt.
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🟢 فعال کردن افکت بلور (Blur: True)", callback_data="brand_save_blur_true")],
+        [InlineKeyboardButton(text="🔴 غیرفعال کردن افکت بلور (Blur: False)", callback_data="brand_save_blur_false")],
+        [InlineKeyboardButton(text="🔙 انصراف", callback_data="adm_sub_branding_menu")]
+    ])
+    await callback.message.edit_text("✨ *تنظیم افکت تار شدن پس‌زمینه (Blur) صفحه اشتراک:*", reply_markup=kb, parse_mode="MarkdownV2")
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("brand_save_blur_"))
+async def brand_save_blur_confirmed(callback: CallbackQuery):
+    """Submits blurred backdrop configuration setting to master API."""
+    val = callback.data.split("_")[3] == "true"
+    payload = {"background_blur": val}
+    res = api.update_brand(payload)
+    if res and res.get("success"):
+        await callback.answer("✅ افکت بلور با موفقیت به‌روزرسانی شد\\.", show_alert=True)
+    else:
+        await callback.answer("❌ خطا در ثبت اطلاعات\\.", show_alert=True)
+    await adm_sub_branding_menu_callback(callback, FSMContext)
+
+@router.callback_query(F.data == "brand_reset_defaults_init")
+async def brand_reset_defaults_init_callback(callback: CallbackQuery):
+    """Confirms restoration of brand parameters back to system default colors."""
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 بله، ریست به حالت پیش‌فرض", callback_data="brand_reset_defaults_confirmed")],
+        [InlineKeyboardButton(text="🔙 انصراف", callback_data="adm_sub_branding_menu")]
+    ])
+    await callback.message.edit_text(
+        "⚠️ *آیا از بازگردانی ظاهر صفحه به حالت پیش‌فرض مطمئن هستید؟*\n\n"
+        "این کار تمام کدهای رنگی تم، پس‌زمینه، متن و تصاویر را حذف کرده و قالب پیش‌فرض را فعال می‌کند\\.",
+        reply_markup=kb,
+        parse_mode="MarkdownV2"
+    )
+    await callback.answer()
+
+@router.callback_query(F.data == "brand_reset_defaults_confirmed")
+async def brand_reset_defaults_confirmed_callback(callback: CallbackQuery):
+    """Submits default payload resetting all customizations."""
+    payload = {
+        "label": "",
+        "logo": "",
+        "theme_color": "#0a84ff",
+        "background_color": "#000000",
+        "text_color": "#ffffff",
+        "support_text": "",
+        "logo_shape": "rounded-28px",
+        "progress_style": "circular",
+        "background_image_url": "",
+        "background_blur": False
+    }
+    await callback.message.edit_text("⏳ در حال بازگردانی تنظیمات قالب به مقادیر پایه سیستمی\\.\\.\\.", parse_mode="MarkdownV2")
+    res = api.update_brand(payload)
+    if res and res.get("success"):
+        await callback.answer("✅ قالب برند با موفقیت به حالت پیش‌فرض ریست شد\\.", show_alert=True)
+    else:
+         await callback.answer("❌ خطا در اعمال ریست قالب روی سرور\\.", show_alert=True)
+    await adm_sub_branding_menu_callback(callback, FSMContext)
+
+# ---------------------------------------------------------------------------
+# State completion handlers for branding fields
+# ---------------------------------------------------------------------------
+async def save_brand_field_api(message: Message, state: FSMContext, field_key: str, value):
+    """Helper function to execute central server sync for brand configuration."""
+    payload = {field_key: value}
+    await message.reply("⏳ در حال همگام‌سازی و ذخیره‌سازی داده‌های قالب روی سرور اصلی\\.\\.\\.", parse_mode="MarkdownV2")
+    
+    res = api.update_brand(payload)
+    await state.clear()
+    
+    if res and res.get("success"):
+        await message.reply(
+            f"✅ ویژگی برند `{escape_md_code(field_key)}` با موفقیت روی سرور اعمال و ذخیره شد\\.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 بازگشت به منوی شخصی‌سازی ظاهر", callback_data="adm_sub_branding_menu")]
+            ]),
+            parse_mode="MarkdownV2"
+        )
+    else:
+        await message.reply(
+            "❌ خطا در ذخیره تنظیمات روی سرور اصلی\\.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 بازگشت به منوی شخصی‌سازی ظاهر", callback_data="adm_sub_branding_menu")]
+            ]),
+            parse_mode="MarkdownV2"
+        )
+
+@router.message(AdminStates.waiting_for_brand_label)
+async def process_brand_label(message: Message, state: FSMContext):
+    await save_brand_field_api(message, state, "label", message.text.strip())
+
+@router.message(AdminStates.waiting_for_brand_logo)
+async def process_brand_logo(message: Message, state: FSMContext):
+    url = message.text.strip()
+    if not url.startswith(("http://", "https://")):
+         return await message.reply("❌ خطا: آدرس تصویر حتما باید با پروتکل معتبر http یا https شروع شود\\. مجددا ارسال کنید:")
+    await save_brand_field_api(message, state, "logo", url)
+
+@router.message(AdminStates.waiting_for_brand_theme_color)
+async def process_brand_theme_color(message: Message, state: FSMContext):
+    color = message.text.strip()
+    if not re.match(r"^#[0-9a-fA-F]{6}$", color):
+         return await message.reply("❌ خطا: فرمت رنگ هگز نامعتبر است\\. حتماً باید شبیه نمونه `#0A84FF` باشد\\. مجدداً ارسال کنید:")
+    await save_brand_field_api(message, state, "theme_color", color)
+
+@router.message(AdminStates.waiting_for_brand_bg_color)
+async def process_brand_bg_color(message: Message, state: FSMContext):
+    color = message.text.strip()
+    if not re.match(r"^#[0-9a-fA-F]{6}$", color):
+         return await message.reply("❌ خطا: فرمت رنگ هگز نامعتبر است\\. حتماً باید شبیه نمونه `#000000` باشد\\. مجدداً ارسال کنید:")
+    await save_brand_field_api(message, state, "background_color", color)
+
+@router.message(AdminStates.waiting_for_brand_text_color)
+async def process_brand_text_color(message: Message, state: FSMContext):
+    color = message.text.strip()
+    if not re.match(r"^#[0-9a-fA-F]{6}$", color):
+         return await message.reply("❌ خطا: فرمت رنگ هگز نامعتبر است\\. حتماً باید شبیه نمونه `#FFFFFF` باشد\\. مجدداً ارسال کنید:")
+    await save_brand_field_api(message, state, "text_color", color)
+
+@router.message(AdminStates.waiting_for_brand_bg_image)
+async def process_brand_bg_image(message: Message, state: FSMContext):
+    url = message.text.strip()
+    if not url.startswith(("http://", "https://")):
+         return await message.reply("❌ خطا: آدرس عکس پس‌زمینه حتماً باید با پروتکل معتبر http یا https شروع شود\\. مجدداً ارسال کنید:")
+    await save_brand_field_api(message, state, "background_image_url", url)
+
+@router.message(AdminStates.waiting_for_brand_support_text)
+async def process_brand_support_text(message: Message, state: FSMContext):
+    await save_brand_field_api(message, state, "support_text", message.text.strip())
 
 # ---------------------------------------------------------------------------
 # 11.0.2 Gifting All Users Feature
